@@ -270,6 +270,96 @@ backend:
         agent: "testing"
         comment: "✅ PASSED - Deleted history entry successfully. Returns 404 on subsequent delete attempt as expected."
 
+  - task: "GET /api/products/count - product master count"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Returns count of products in master. Used to verify upload success."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Returns {count: 27466}. Correct schema and count verified."
+
+  - task: "GET /api/products/search - search product master"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Searches product master with query parameter q. Supports multi-token search (all tokens must match). Returns array of products with id, name, pack, norm fields. Supports limit parameter (default 20, max 50). Empty query returns first N products."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - All search scenarios verified: (1) Single token 'telmikind' returns 20 products with 'TELMIKIND' in uppercase name. (2) Multi-token 'telmikind am' returns 4 products including exact 'TELMIKIND AM' entry. (3) Empty query returns 20 products (fallback). (4) Limit=5 returns exactly 5 results. (5) Nonexistent query 'zxzxzx_nonexistent' returns empty array. All products have required fields (id, name, norm)."
+
+  - task: "POST /api/products/upload - upload product master"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Accepts .xlsx or .csv file with product master. Extracts columns matching Product Name / Pack / Strength / MRP / Manufacturer / Code. Replaces existing products. Returns inserted count and detected columns. Validates file type and content."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Upload validation working correctly: (1) Empty body rejected with 422. (2) Wrong file extension (.txt) rejected with 400 and detail 'Unsupported file type. Please upload .xlsx or .csv'. (3) Valid .xlsx file uploaded successfully, inserted 27466 products. Product count verified after upload."
+
+  - task: "DELETE /api/products/clear - clear product master"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Clears all products from master. Returns deleted count. Used for testing and re-upload scenarios."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Cleared 27466 products successfully. Count verified as 0 after clear. Re-upload from /tmp/product_master.xlsx restored 27466 products. Full clear-and-restore cycle working correctly."
+
+  - task: "GET /api/screenshots/{filename} - retrieve screenshot"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Returns screenshot file as image/png. Returns 404 for nonexistent files. Prevents path traversal."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Returns 404 for nonexistent screenshot 'nonexistent.png'. Path traversal protection verified."
+
+  - task: "POST /api/targets/{id}/test-login - test distributor credentials"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Tests login credentials for a distributor. Returns {ok: bool, detail: str, screenshot?: str}. Returns ok=false with 'Credentials not set' detail if distributor has no credentials."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED - Returns 200 with ok=false and detail 'Credentials not set for this distributor' when testing distributor without credentials. Correct validation and response schema."
+
 frontend:
   - task: "Frontend integration with real backend"
     implemented: true
@@ -289,7 +379,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 3
+  test_sequence: 4
   run_ui: true
 
 test_plan:
@@ -301,7 +391,7 @@ test_plan:
 
 agent_communication:
   - agent: "main"
-    message: "Bug fix requested: user's search input like 'telmikind am' would miss portal products stored as 'telmikind-am' (special-character mismatch). Fix applied in /app/backend/adapters/sunshop.py `_search_product()`: (1) Tokenize product query by dropping all special characters; (2) type only the FIRST token so autocomplete shows a broader list; (3) score every visible suggestion by how many of the user's tokens appear (with special chars normalized on both sides); (4) click the best-scoring suggestion. Also changed frontend fonts (index.css) to Space Grotesk + JetBrains Mono for data. Please re-run backend regression tests to confirm nothing regressed (endpoint contracts unchanged). DO NOT hit live SUNSHOP — the fix has already been verified live by the main agent with the user's real credentials (telmikind am matched 3/4 distributors including one with hyphen variant TELMIKIND-AM)."
+    message: "Second bug fix in the SUNSHOP adapter's autocomplete matching (/app/backend/adapters/sunshop.py `_search_product()`). The previous fix picked any prefix match, so 'telmikind am' would accidentally match 'TELMIKIND AM 80' or 'TELMIKIND AM BETA 50 TAB' on distributors that don't stock the plain variant. Fix: (1) added a scoring function that gives a big bonus to exact-prefix matches with no extra tokens (~54), moderate score to prefix + pack-like token (~26), heavy penalty to prefix + numeric-dosage token (~12) or prefix + alphabetic-modifier like BETA (~18); (2) raised the pick threshold to >= 22, so only clean matches qualify; (3) if no clean match exists, mark that distributor as NOT_FOUND instead of picking a random variant. Verified live: 'telmikind am' → only HEGDE (with plain variant) matched; 'telmikind am 80' → only SAROJ (with 80mg) matched. Please re-run backend regression tests. No API contract changed."
   - agent: "testing"
     message: "All 11 backend endpoints passed on first run in earlier test session."
   - agent: "main"
@@ -314,3 +404,5 @@ agent_communication:
     message: "✅ PHASE A/B REGRESSION TEST COMPLETED - 14/15 PRIORITY TESTS PASSED. Created /app/regression_test.py with comprehensive coverage of all refactored endpoints and schema changes. CRITICAL SECURITY VERIFIED: encryptedPassword field NEVER exposed in any API response (POST/GET/PATCH /api/targets). NEW SCHEMA WORKING: hasCredentials, username, portalType fields present and correct. NEW ENDPOINTS WORKING: POST /api/targets/{id}/test-login returns ok=false with 'Credentials not set' detail for distributors without credentials. GET /api/screenshots/{filename} returns 404 for nonexistent files and 200 with valid PNG for existing files. VALIDATION WORKING: POST /api/extract correctly rejects empty product (400) and empty target_ids (400). CREDENTIALS FLOW WORKING: POST /api/extract with distributor lacking credentials returns LOGIN_FAILED status quickly (1.5s, no browser launch) with correct detail message. HISTORY SCHEMA UPDATED: quantity, notFound, loginFailed, results[] with items[] array all present. Minor: GET /api/portals returns 6 portals instead of 5 (leftover TEST_PORTAL from previous test run, not a regression). All 6 seeded distributors returned correctly. NO CRITICAL ISSUES FOUND. Backend refactor successful."
   - agent: "testing"
     message: "✅ SUNSHOP ADAPTER REGRESSION TEST COMPLETED - ALL 14 TESTS PASSED. Created /app/sunshop_regression_test.py to verify no regressions after sunshop.py _search_product() rewrite (smarter autocomplete matching with tokenization). VERIFIED: (1) GET /api/portals returns exactly 5 seeded portals (SUNSHOP, CHETHANA, VARDHAMAN, MEDPLUS, APOLLO), CHETHANA baseUrl confirmed as http://www.chethanapharma.in. (2) GET /api/targets returns 6 distributors with portalType + hasCredentials fields, encryptedPassword NEVER exposed. (3) POST /api/targets with credentials (portalType: SUNSHOP) returns hasCredentials=true, no encryptedPassword. (4) PATCH /api/targets/{id} with password returns hasCredentials=true, no encryptedPassword. (5) PATCH /api/targets/{id} with selected toggle working. (6) POST /api/targets/{id}/test-login on distributor with NO credentials returns ok=false with 'Credentials not set' detail. (7) POST /api/extract with distributor lacking credentials returns LOGIN_FAILED status quickly (0.3s < 5s, no browser launch). (8) POST /api/extract with empty product returns 400. (9) POST /api/extract with empty target_ids returns 400. (10) GET /api/history returns 25 entries sorted newest first with correct schema (quantity, results[]). (11) GET /api/history/{id} returns entry with items[] preserved. (12) GET /api/screenshots/nonexistent.png returns 404. (13) DELETE /api/targets/{id} returns 200 then 404 on repeat. (14) DELETE /api/history/{id} returns 200 then 404 on repeat. NO REGRESSIONS FOUND. Sunshop adapter change is INTERNAL and did not affect any API contracts. All backend endpoints working correctly."
+  - agent: "testing"
+    message: "✅ PHARMASCRAPE COMPREHENSIVE REGRESSION TEST COMPLETED - ALL 18 PRIORITY TESTS PASSED. Created /app/pharmascrape_regression_test.py to verify no regressions after second internal fix to sunshop.py _search_product() and addition of product master endpoints. VERIFIED EXISTING ENDPOINTS: (1) GET /api/portals returns exactly 5 seeded portals (SUNSHOP, CHETHANA, VARDHAMAN, MEDPLUS, APOLLO). (2) GET /api/targets returns 6 distributors, encryptedPassword NEVER exposed, all required fields present (portalType, hasCredentials). (3) POST /api/extract validation working: empty product → 400, empty target_ids → 400. (4) POST /api/extract with distributor lacking credentials returns LOGIN_FAILED status in 0.33s (< 5s, no browser launch). (5) POST /api/targets/{id}/test-login with no credentials returns ok=false with detail 'Credentials not set for this distributor'. (6) GET /api/history returns 29 entries sorted newest first with correct schema (quantity, results[] with loginScreenshot/searchScreenshot/resultsScreenshot fields). (7) GET /api/history/{id} returns full entry with items[] preserved. (8) GET /api/screenshots/nonexistent.png returns 404. VERIFIED NEW PRODUCT MASTER ENDPOINTS: (9) GET /api/products/count returns {count: 27466} with correct schema. (10) GET /api/products/search?q=telmikind returns 20 products, all contain 'TELMIKIND' in uppercase name. (11) GET /api/products/search?q=telmikind%20am returns 4 products with both tokens, including exact 'TELMIKIND AM' entry. (12) GET /api/products/search?q= (empty query) returns 20 products (fallback). (13) GET /api/products/search with limit=5 returns exactly 5 results. (14) GET /api/products/search?q=zxzxzx_nonexistent returns empty array. (15) POST /api/products/upload with empty body rejected with 422. (16) POST /api/products/upload with wrong extension (.txt) rejected with 400 and detail 'Unsupported file type. Please upload .xlsx or .csv'. (17) DELETE /api/products/clear cleared 27466 products, count verified as 0, then re-uploaded from /tmp/product_master.xlsx restored 27466 products. Full clear-and-restore cycle working correctly. NO REGRESSIONS FOUND. All backend endpoints working correctly after sunshop.py internal fix and product master addition."

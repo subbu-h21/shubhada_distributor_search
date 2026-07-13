@@ -456,34 +456,76 @@ class SunshopAdapter(BaseAdapter):
         target_norm = _normalize(product)
         target_tokens = raw_tokens
 
-        best_el, best_score = None, -1
-        for el, txt in candidates:
-            norm = _normalize(txt)
-            # Count how many of the user's tokens are present as whole tokens or substrings
+        def _score(suggestion_text: str) -> int:
+            """Score a suggestion. Rules:
+            - Big bonus if suggestion starts with the exact query tokens as a prefix.
+            - Penalty if immediately after the prefix comes a purely-numeric token
+              (means extra dosage like TELMIKIND AM 80 when user typed TELMIKIND AM).
+            - Bonus if immediately after the prefix comes an alphanumeric pack token
+              (like 10S, 15S) — those are unavoidable in SUNSHOP product codes.
+            - Exact match (no extra tokens at all): huge bonus.
+            - Fallback: sub-token overlap.
+            """
+            norm = _normalize(suggestion_text)
+            words = norm.split()
+            n = len(target_tokens)
+
+            # Prefix match on the exact query tokens
+            if n and len(words) >= n and words[:n] == target_tokens:
+                score = 20 + n * 2
+                extra = words[n:]
+                if not extra:
+                    # Exactly matches the query — best possible
+                    score += 30
+                else:
+                    nxt = extra[0]
+                    if nxt.isdigit():
+                        # Purely numeric extra token = different dosage, big penalty
+                        score -= 12
+                    elif re.match(r"^\d+[a-z]+$", nxt) or re.match(r"^[a-z]+\d+$", nxt):
+                        # Pack info like 10s / 15s or a code
+                        score += 2
+                    else:
+                        # Other alphabetic modifier (BETA, PLUS, XR, etc.)
+                        # Also different variant, moderate penalty
+                        score -= 6
+                return score
+
+            # No prefix match: fall back to token overlap
             score = 0
-            for tok in target_tokens:
-                if tok in norm.split():
-                    score += 2  # exact token match — best
-                elif tok in norm:
-                    score += 1  # substring match
-            # Bonus if the full normalized target appears
+            for t in target_tokens:
+                if t in words:
+                    score += 2
+                elif t in norm:
+                    score += 1
             if target_norm and target_norm in norm:
                 score += 5
-            if score > best_score:
-                best_score = score
+            return score
+
+        best_el, best_score = None, -1
+        for el, txt in candidates:
+            s = _score(txt)
+            if s > best_score:
+                best_score = s
                 best_el = el
 
-        # If we found a scored suggestion, click it
+        # If we found a scored suggestion, click it — but ONLY if it's a clean
+        # prefix match. Threshold 22 accepts: exact match (~54) or prefix + pack
+        # token like 10S/15S (~26). Rejects: dosage extras (~12) or modifiers
+        # like BETA/PLUS/XR (~18) or non-prefix substring matches (< 10).
+        # This ensures 'telmikind am' does not accidentally pick 'telmikind am 80'
+        # or 'telmikind am beta 50 tab' — the distributor simply gets NOT_FOUND
+        # if they don't stock the exact variant.
         picked = False
-        if best_el and best_score >= 1:
+        if best_el and best_score >= 22:
             try:
                 await best_el.click()
                 picked = True
             except Exception:
                 pass
-
-        # Fallback: keyboard navigation
-        if not picked:
+        elif not candidates:
+            # No suggestions surfaced at all — try keyboard fallback for portals
+            # whose autocomplete renders inside iframes / shadow DOM.
             try:
                 await page.keyboard.press("ArrowDown")
                 await page.wait_for_timeout(200)
@@ -491,6 +533,9 @@ class SunshopAdapter(BaseAdapter):
                 picked = True
             except Exception:
                 pass
+        # else: candidates exist but none was a clean-enough match — leave picked=False
+        # so the caller marks this distributor as NOT_FOUND (with the results
+        # screenshot showing what variants they actually stock).
 
         # Give the form time to populate Stock / other fields after selection
         await page.wait_for_timeout(1000)
