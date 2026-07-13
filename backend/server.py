@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Query
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Query, Header, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -23,6 +23,7 @@ load_dotenv(ROOT_DIR / '.env')
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers"))
 
 from security import encrypt_secret, decrypt_secret
+from auth import hash_password, verify_password, create_token, decode_token, bearer_from_header
 from adapters import get_adapter
 
 # Playwright is imported lazily inside extraction to keep app startup snappy
@@ -114,6 +115,29 @@ class TestLoginResponse(BaseModel):
     screenshot: Optional[str] = None
 
 
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str
+    name: Optional[str] = None
+    isAdmin: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: User
+
+
 # ============================================================
 # HELPERS
 # ============================================================
@@ -161,7 +185,27 @@ async def _cleanup_old_screenshots():
 
 
 async def seed_if_empty():
-    """Seed portals + distributors + history if collections are empty."""
+    """Seed portals + distributors + users if collections are empty."""
+    if await db.users.count_documents({}) == 0:
+        seed_users = [
+            ("shubhada", "2612", "Shubhada"),
+            ("manju", "6387", "Manju"),
+            ("abhishek", "5555", "Abhishek"),
+            ("narendra", "6666", "Narendra"),
+        ]
+        docs = []
+        for username, password, name in seed_users:
+            u = User(username=username, name=name, isAdmin=True)
+            d = u.dict()
+            d["hashedPassword"] = hash_password(password)
+            docs.append(d)
+        await db.users.insert_many(docs)
+        try:
+            await db.users.create_index("username", unique=True)
+        except Exception:
+            pass
+        logger.info(f"Seeded {len(seed_users)} users")
+
     if await db.portals.count_documents({}) == 0:
         portals = [
             Portal(name="SUNSHOP", baseUrl="https://www.sunshop.co.in", status="ACTIVE", description="Sunshop portal — supports real login + scrape"),
@@ -188,6 +232,67 @@ async def seed_if_empty():
             docs.append(d.dict())
         await db.targets.insert_many(docs)
         logger.info("Seeded distributors")
+
+
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+async def _get_user_by_username(username: str) -> Optional[dict]:
+    return await db.users.find_one({"username": username.lower()})
+
+
+async def _current_user_from_request(request) -> Optional[dict]:
+    """Extract & validate the JWT from the Authorization header. Return user dict or None."""
+    token = bearer_from_header(request.headers.get("authorization"))
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+    except HTTPException:
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    user = await db.users.find_one({"id": user_id})
+    return user
+
+
+@api_router.post("/auth/login", response_model=LoginResponse)
+async def auth_login(payload: LoginRequest):
+    user = await _get_user_by_username(payload.username.strip().lower())
+    if not user or not verify_password(payload.password, user.get("hashedPassword", "")):
+        raise HTTPException(401, "Invalid username or password")
+    token = create_token(user["id"], user["username"])
+    return LoginResponse(token=token, user=User(**{k: v for k, v in user.items() if k not in ("_id", "hashedPassword")}))
+
+
+@api_router.get("/auth/me", response_model=User)
+async def auth_me(authorization: Optional[str] = Header(None)):
+    token = bearer_from_header(authorization)
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    payload = decode_token(token)
+    user = await db.users.find_one({"id": payload.get("sub")})
+    if not user:
+        raise HTTPException(401, "User no longer exists")
+    return User(**{k: v for k, v in user.items() if k not in ("_id", "hashedPassword")})
+
+
+@api_router.post("/auth/change-password")
+async def auth_change_password(payload: ChangePasswordRequest, authorization: Optional[str] = Header(None)):
+    token = bearer_from_header(authorization)
+    if not token:
+        raise HTTPException(401, "Not authenticated")
+    p = decode_token(token)
+    user = await db.users.find_one({"id": p.get("sub")})
+    if not user:
+        raise HTTPException(401, "User no longer exists")
+    if not verify_password(payload.current_password, user.get("hashedPassword", "")):
+        raise HTTPException(400, "Current password is incorrect")
+    if len(payload.new_password) < 4:
+        raise HTTPException(400, "New password too short (min 4 chars)")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"hashedPassword": hash_password(payload.new_password)}})
+    return {"ok": True}
 
 
 # ============================================================
@@ -685,6 +790,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---- Auth middleware: protect all /api/* except /api/auth/* and /api/ root ----
+PUBLIC_API_PATHS = {"/api/", "/api"}
+
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    from starlette.responses import JSONResponse
+    path = request.url.path
+    # Only guard /api/* endpoints; skip auth endpoints, root, and screenshots
+    if (
+        path.startswith("/api/")
+        and not path.startswith("/api/auth/")
+        and not path.startswith("/api/screenshots/")
+        and path not in PUBLIC_API_PATHS
+    ):
+        # Allow OPTIONS preflight through
+        if request.method != "OPTIONS":
+            token = bearer_from_header(request.headers.get("authorization"))
+            if not token:
+                return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+            try:
+                decode_token(token)
+            except HTTPException as e:
+                return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+            except Exception:
+                return JSONResponse({"detail": "Invalid token"}, status_code=401)
+    return await call_next(request)
 
 
 @app.on_event("startup")

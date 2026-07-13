@@ -6,8 +6,37 @@ export const API_BASE = `${BACKEND_URL}/api`;
 const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 120000, // 2 min — real scraping can be slow
+  timeout: 120000,
 });
+
+// Attach auth token from localStorage to every request
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('ps.token');
+  if (token) {
+    config.headers = { ...config.headers, Authorization: `Bearer ${token}` };
+  }
+  return config;
+});
+
+// Auto-logout on 401
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401) {
+      const path = err?.config?.url || '';
+      // Don't logout while on the login flow itself
+      if (!path.includes('/auth/login')) {
+        localStorage.removeItem('ps.token');
+        localStorage.removeItem('ps.user');
+        // Trigger a soft reload so AuthContext re-evaluates
+        if (window.location.pathname !== '/') {
+          window.location.href = '/';
+        }
+      }
+    }
+    return Promise.reject(err);
+  }
+);
 
 export const screenshotUrl = (filename) => (filename ? `${API_BASE}/screenshots/${filename}` : null);
 
@@ -37,9 +66,9 @@ export const ProductsAPI = {
   upload: (file) => {
     const form = new FormData();
     form.append('file', file);
-    return axios.post(`${API_BASE}/products/upload`, form, {
+    return api.post('/products/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 300000, // 5 min for large files
+      timeout: 300000,
     }).then((r) => r.data);
   },
 };
