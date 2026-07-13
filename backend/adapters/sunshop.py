@@ -376,13 +376,31 @@ class SunshopAdapter(BaseAdapter):
             await search_el.click()
         except Exception:
             pass
-        # Clear any existing value, then type char-by-char to trigger autocomplete
+        # Clear any existing value
         try:
             await search_el.fill("")
         except Exception:
             pass
-        await search_el.type(product, delay=50)
-        await page.wait_for_timeout(1200)  # give autocomplete time
+
+        # Type the product WORD-BY-WORD, pausing between words so the portal's
+        # autocomplete has time to narrow down (many pharma portals lag on AJAX).
+        # This also helps avoid mismatches when product IDs differ slightly across distributors.
+        words = [w for w in product.strip().split() if w]
+        for i, word in enumerate(words):
+            if i > 0:
+                # Type a space before each subsequent word
+                try:
+                    await search_el.type(" ")
+                except Exception:
+                    pass
+                await page.wait_for_timeout(200)
+            # Type each character with a small delay so onkeyup autocomplete fires
+            await search_el.type(word, delay=80)
+            # Give the autocomplete AJAX enough time between words
+            await page.wait_for_timeout(600)
+
+        # Extra wait after the last word for the final autocomplete list to settle
+        await page.wait_for_timeout(900)
 
         # Capture the autocomplete state for diagnostics
         await self._screenshot(page, "autocomplete-open")
