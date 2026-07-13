@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { CheckCircle2, AlertTriangle, ChevronRight, Package } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, ChevronRight, Package, Loader2 } from 'lucide-react';
 import HistoryDetail from '../components/HistoryDetail';
 
 function formatDate(iso) {
@@ -11,23 +11,60 @@ function formatDate(iso) {
 }
 
 const HistoryPage = () => {
-  const { history } = useApp();
+  const { history, loading, getHistoryDetail } = useApp();
   const [selected, setSelected] = useState(null);
+  const [fetchingDetail, setFetchingDetail] = useState(false);
+
+  const openEntry = async (entry) => {
+    // If results already present, open immediately; otherwise fetch details
+    if (entry.results && entry.results.length > 0) {
+      setSelected(entry);
+      return;
+    }
+    try {
+      setFetchingDetail(true);
+      const full = await getHistoryDetail(entry.id);
+      setSelected(full);
+    } catch (e) {
+      setSelected(entry);
+    } finally {
+      setFetchingDetail(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="pt-10 flex items-center justify-center text-neutral-500">
+        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+        <span className="text-[11px] mono-track-wide">LOADING HISTORY</span>
+      </div>
+    );
+  }
 
   return (
     <div className="pt-3">
       <div className="grid grid-cols-3 gap-2 mb-5">
         <Stat label="TOTAL RUNS" value={history.length} />
-        <Stat label="AVG TARGETS" value={Math.round(history.reduce((a, h) => a + h.targetsRun, 0) / Math.max(history.length, 1))} />
+        <Stat
+          label="AVG TARGETS"
+          value={history.length ? Math.round(history.reduce((a, h) => a + h.targetsRun, 0) / history.length) : 0}
+        />
         <Stat label="FOUND" value={history.reduce((a, h) => a + h.found, 0)} />
       </div>
+
+      {history.length === 0 && (
+        <div className="border border-dashed border-neutral-300 rounded-sm py-12 text-center">
+          <p className="text-[11px] mono-track-wide text-neutral-500">NO EXTRACTION RUNS YET</p>
+        </div>
+      )}
 
       <ul className="space-y-2.5">
         {history.map((h) => (
           <li key={h.id}>
             <button
               type="button"
-              onClick={() => setSelected(h)}
+              onClick={() => openEntry(h)}
+              disabled={fetchingDetail}
               className="w-full text-left border border-neutral-300 rounded-sm px-4 py-3.5 card-hover bg-white flex items-center gap-3"
             >
               <div className="w-9 h-9 shrink-0 border border-neutral-950 rounded-sm flex items-center justify-center">

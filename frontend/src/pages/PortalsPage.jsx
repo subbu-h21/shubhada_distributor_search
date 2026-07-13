@@ -1,8 +1,41 @@
-import React from 'react';
-import { PORTALS } from '../mock';
-import { Circle, ExternalLink } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { PortalsAPI } from '../lib/api';
+import { Circle, ExternalLink, Loader2 } from 'lucide-react';
 
 const PortalsPage = () => {
+  const [portals, setPortals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        const data = await PortalsAPI.list();
+        setPortals(data);
+      } catch (e) {
+        setError('Failed to load portals');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="pt-10 flex items-center justify-center text-neutral-500">
+        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+        <span className="text-[11px] mono-track-wide">LOADING PORTALS</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="pt-10 text-center text-[12px] mono-track-wide text-neutral-500">{error}</div>
+    );
+  }
+
   return (
     <div className="pt-3">
       <p className="text-[12px] text-neutral-500 mono-track-tight mb-4">
@@ -10,7 +43,7 @@ const PortalsPage = () => {
       </p>
 
       <ul className="space-y-2.5">
-        {PORTALS.map((p) => {
+        {portals.map((p) => {
           const isActive = p.status === 'ACTIVE';
           return (
             <li

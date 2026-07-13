@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet';
-import { PORTALS } from '../mock';
+import { PortalsAPI } from '../lib/api';
 import { useApp } from '../context/AppContext';
 import { toast } from 'sonner';
 
@@ -8,18 +8,40 @@ const AddTargetSheet = ({ open, onOpenChange }) => {
   const { addTarget } = useApp();
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
-  const [portal, setPortal] = useState(PORTALS[0].name);
+  const [portal, setPortal] = useState('');
+  const [portals, setPortals] = useState([]);
+  const [saving, setSaving] = useState(false);
 
-  const submit = (e) => {
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      try {
+        const list = await PortalsAPI.list();
+        const active = list.filter((p) => p.status === 'ACTIVE');
+        setPortals(active);
+        if (active.length && !portal) setPortal(active[0].name);
+      } catch (e) { console.error(e); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const submit = async (e) => {
     e.preventDefault();
-    if (!name.trim() || !url.trim()) {
+    if (!name.trim() || !url.trim() || !portal) {
       toast.error('Fill all fields');
       return;
     }
-    addTarget({ name: name.trim().toUpperCase(), url: url.trim(), portal });
-    toast('Target added');
-    setName(''); setUrl('');
-    onOpenChange(false);
+    try {
+      setSaving(true);
+      await addTarget({ name: name.trim().toUpperCase(), url: url.trim(), portal });
+      toast('Target added');
+      setName(''); setUrl('');
+      onOpenChange(false);
+    } catch (err) {
+      toast.error('Failed to add target');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -62,7 +84,7 @@ const AddTargetSheet = ({ open, onOpenChange }) => {
               PORTAL
             </label>
             <div className="flex flex-wrap gap-2">
-              {PORTALS.filter((p) => p.status === 'ACTIVE').map((p) => (
+              {portals.map((p) => (
                 <button
                   key={p.id}
                   type="button"
@@ -81,9 +103,10 @@ const AddTargetSheet = ({ open, onOpenChange }) => {
 
           <button
             type="submit"
-            className="w-full h-14 bg-neutral-950 hover:bg-neutral-800 text-white rounded-sm flex items-center justify-center text-[13px] mono-track-wide font-bold press"
+            disabled={saving}
+            className="w-full h-14 bg-neutral-950 hover:bg-neutral-800 disabled:opacity-70 text-white rounded-sm flex items-center justify-center text-[13px] mono-track-wide font-bold press"
           >
-            ADD TARGET
+            {saving ? 'ADDING…' : 'ADD TARGET'}
           </button>
         </form>
       </SheetContent>
