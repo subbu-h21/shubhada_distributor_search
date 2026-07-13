@@ -11,7 +11,7 @@ const NAV = [
 const Layout = ({ children }) => {
   const location = useLocation();
   const titles = {
-    '/search': { title: 'PHARMASCRAPE', subtitle: 'DISTRIBUTOR AVAILABILITY LOOKUP' },
+    '/search': { title: 'SHUBHADA PHARMA SIRSI', subtitle: 'AI SEARCH \u00b7 DISTRIBUTOR AVAILABILITY' },
     '/portals': { title: 'PORTALS', subtitle: 'CONNECTED DISTRIBUTOR ENDPOINTS' },
     '/history': { title: 'HISTORY', subtitle: 'PREVIOUS EXTRACTION RUNS' },
   };
@@ -25,12 +25,12 @@ const Layout = ({ children }) => {
         {/* Header */}
         <header className="px-6 pt-7 pb-5 border-b border-neutral-200">
           <div className="flex items-baseline gap-2">
-            <div className="w-2 h-6 bg-emerald-600 rounded-sm" />
-            <h1 className="text-[28px] sm:text-[32px] font-extrabold mono-track leading-none text-neutral-950">
+            <div className="w-2 h-6 bg-emerald-600 rounded-sm shrink-0" />
+            <h1 className="text-[22px] sm:text-[28px] font-extrabold mono-track leading-none text-neutral-950 break-words">
               {meta.title}
             </h1>
           </div>
-          <p className="mt-2 text-[11px] sm:text-xs text-neutral-500 mono-track-wide font-medium pl-4">
+          <p className="mt-2 text-[10px] sm:text-xs text-neutral-500 mono-track-wide font-medium pl-4">
             {meta.subtitle}
           </p>
         </header>
