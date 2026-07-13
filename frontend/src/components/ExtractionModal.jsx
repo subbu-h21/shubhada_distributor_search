@@ -65,7 +65,7 @@ const ExtractionModal = ({ open, onOpenChange }) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl border-neutral-950 rounded-sm p-0 gap-0 max-h-[92vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-3xl border-emerald-600 rounded-sm p-0 gap-0 max-h-[92vh] overflow-hidden flex flex-col">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-neutral-200 shrink-0">
           <DialogTitle className="text-[20px] font-extrabold mono-track uppercase leading-none">
             {phase === 'running' ? 'RUNNING EXTRACTION' : phase === 'error' ? 'EXTRACTION FAILED' : 'EXTRACTION RESULTS'}
@@ -125,10 +125,10 @@ const ExtractionModal = ({ open, onOpenChange }) => {
               </ul>
 
               <div className="mt-5 grid grid-cols-2 gap-2">
-                <button onClick={copyJson} className="h-11 border border-neutral-300 hover:border-neutral-950 rounded-sm flex items-center justify-center gap-2 text-[11px] mono-track-wide font-semibold press">
+                <button onClick={copyJson} className="h-11 border border-neutral-300 hover:border-emerald-600 rounded-sm flex items-center justify-center gap-2 text-[11px] mono-track-wide font-semibold press">
                   <Copy className="w-3.5 h-3.5" /> COPY JSON
                 </button>
-                <button onClick={exportCsv} className="h-11 bg-neutral-950 hover:bg-neutral-800 text-white rounded-sm flex items-center justify-center gap-2 text-[11px] mono-track-wide font-semibold press">
+                <button onClick={exportCsv} className="h-11 bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm flex items-center justify-center gap-2 text-[11px] mono-track-wide font-semibold press">
                   <Download className="w-3.5 h-3.5" /> EXPORT CSV
                 </button>
               </div>
@@ -147,7 +147,7 @@ const ExtractionModal = ({ open, onOpenChange }) => {
 };
 
 const Stat = ({ label, value, strong }) => (
-  <div className={`border rounded-sm px-2.5 py-2.5 ${strong ? 'bg-neutral-950 text-white border-neutral-950' : 'border-neutral-300'}`}>
+  <div className={`border rounded-sm px-2.5 py-2.5 ${strong ? 'bg-emerald-600 text-white border-emerald-600' : 'border-neutral-300'}`}>
     <div className="text-[18px] font-extrabold mono-track-tight tabular-nums leading-none">{value}</div>
     <div className={`mt-1.5 text-[9px] mono-track-wide font-medium ${strong ? 'text-neutral-300' : 'text-neutral-500'}`}>{label}</div>
   </div>

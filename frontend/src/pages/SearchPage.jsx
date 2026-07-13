@@ -34,12 +34,12 @@ const SearchPage = () => {
         <div className="col-span-2">
           <label className="block text-[11px] text-neutral-500 mono-track-wide font-medium mb-2">PRODUCT NAME</label>
           <input value={product} onChange={(e) => setProduct(e.target.value)} placeholder="enter product name"
-            className="w-full h-14 px-4 border border-neutral-300 rounded-sm bg-white text-[16px] font-medium tracking-tight focus:outline-none focus:border-neutral-950 placeholder:text-neutral-400" />
+            className="w-full h-14 px-4 border border-neutral-300 rounded-sm bg-white text-[16px] font-medium tracking-tight focus:outline-none focus:border-emerald-600 placeholder:text-neutral-400" />
         </div>
         <div>
           <label className="block text-[11px] text-neutral-500 mono-track-wide font-medium mb-2">QTY</label>
           <input value={quantity} onChange={(e) => setQuantity(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="10"
-            className="w-full h-14 px-4 border border-neutral-300 rounded-sm bg-white text-[16px] font-bold tabular-nums text-center focus:outline-none focus:border-neutral-950" />
+            className="w-full h-14 px-4 border border-neutral-300 rounded-sm bg-white text-[16px] font-bold tabular-nums text-center focus:outline-none focus:border-emerald-600" />
         </div>
       </section>
 
@@ -54,7 +54,7 @@ const SearchPage = () => {
           {distributors.map((t) => (
             <li key={t.id} className="group relative border border-neutral-300 rounded-sm px-3 py-3 sm:px-4 sm:py-3.5 flex items-center gap-3 card-hover bg-white">
               <button type="button" onClick={() => toggleDistributor(t.id)} aria-pressed={t.selected}
-                className={`shrink-0 w-6 h-6 rounded-[3px] border border-neutral-950 flex items-center justify-center press ${t.selected ? 'bg-neutral-950 text-white' : 'bg-white text-transparent'}`}>
+                className={`shrink-0 w-6 h-6 rounded-[3px] border border-emerald-600 flex items-center justify-center press ${t.selected ? 'bg-emerald-600 text-white' : 'bg-white text-transparent'}`}>
                 <Check className="w-4 h-4" strokeWidth={3} />
               </button>
 
@@ -72,16 +72,16 @@ const SearchPage = () => {
                 </div>
               </div>
 
-              <span className="shrink-0 text-[10px] mono-track-wide font-semibold border border-neutral-950 rounded-sm px-2.5 py-1.5 text-neutral-950 bg-white">{t.portal}</span>
+              <span className="shrink-0 text-[10px] mono-track-wide font-semibold border border-emerald-600 rounded-sm px-2.5 py-1.5 text-neutral-950 bg-white">{t.portal}</span>
 
               <button type="button" onClick={(e) => { e.stopPropagation(); openEdit(t); }}
-                className="shrink-0 w-8 h-8 rounded-sm border border-neutral-300 hover:border-neutral-950 hover:bg-neutral-950 hover:text-white text-neutral-500 flex items-center justify-center press"
+                className="shrink-0 w-8 h-8 rounded-sm border border-neutral-300 hover:border-emerald-600 hover:bg-emerald-600 hover:text-white text-neutral-500 flex items-center justify-center press"
                 aria-label="Edit distributor">
                 {t.hasCredentials ? <Pencil className="w-3.5 h-3.5" strokeWidth={2} /> : <KeyRound className="w-3.5 h-3.5" strokeWidth={2} />}
               </button>
 
               <button type="button" onClick={(e) => { e.stopPropagation(); removeDistributor(t.id); toast('Removed'); }}
-                className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white border border-neutral-300 text-neutral-500 hover:text-white hover:bg-neutral-950 hover:border-neutral-950 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white border border-neutral-300 text-neutral-500 hover:text-white hover:bg-emerald-600 hover:border-emerald-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
                 aria-label="Delete">
                 <X className="w-3 h-3" strokeWidth={2.5} />
               </button>
@@ -90,7 +90,7 @@ const SearchPage = () => {
         </ul>
 
         <button type="button" onClick={openAdd}
-          className="mt-3 w-full border border-dashed border-neutral-300 hover:border-neutral-950 rounded-sm py-3 flex items-center justify-center gap-2 text-[12px] mono-track-wide text-neutral-500 hover:text-neutral-950 press">
+          className="mt-3 w-full border border-dashed border-neutral-300 hover:border-emerald-600 rounded-sm py-3 flex items-center justify-center gap-2 text-[12px] mono-track-wide text-neutral-500 hover:text-neutral-950 press">
           <Plus className="w-4 h-4" strokeWidth={2.2} /> ADD DISTRIBUTOR
         </button>
       </section>
@@ -99,7 +99,7 @@ const SearchPage = () => {
       <div className="fixed bottom-[68px] inset-x-0 px-4 sm:px-6 z-30 pointer-events-none">
         <div className="mx-auto max-w-3xl pointer-events-auto">
           <button type="button" onClick={handleRun} disabled={running}
-            className="w-full h-16 bg-neutral-950 hover:bg-neutral-800 disabled:opacity-70 text-white flex items-center justify-center gap-3 rounded-sm press shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.15)]">
+            className="w-full h-16 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 text-white flex items-center justify-center gap-3 rounded-sm press shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.15)]">
             <Zap className="w-5 h-5 bolt-animate fill-white" strokeWidth={2} />
             <span className="text-[15px] mono-track-wide font-bold">RUN EXTRACTION</span>
           </button>

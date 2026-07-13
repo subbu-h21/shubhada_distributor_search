@@ -293,33 +293,50 @@ class SunshopAdapter(BaseAdapter):
         return False
 
     async def _click_order_feed(self, page, distributor_name: str) -> bool:
-        """On the Order page, find the row matching the distributor and click Order Feed."""
+        """On the Order page, find the row matching the distributor and click Order Feed.
+
+        Uses word-overlap scoring so that DB name variants like:
+          - 'KAPILA MEDICAL AGENCIES' matches portal row 'Kapila Medicals Sirsi'
+          - 'HEGDE BROTHER'           matches portal row 'Hegde Brothers Sirsi'
+          - 'SAROJ PHARMA'            matches portal row 'Saroj pharma sirsi'
+        """
         dist = (distributor_name or "").strip().upper()
-        # Try to find a row whose text contains the distributor name
+        if not dist:
+            return False
+
+        # Ignore short/common words when scoring
+        STOP = {"THE", "AND", "OF", "PVT", "LTD", "LIMITED", "LLP", "PHARMA", "MEDICAL", "MEDICALS", "AGENCIES", "AGENCY", "BROTHER", "BROTHERS", "SIRSI"}
+        words = [w for w in dist.split() if len(w) >= 3]
+        # Weighted: distinctive words (not in STOP) get 2 points; STOP words 1 point.
+        # This makes "KAPILA" (distinctive) trump "MEDICAL" (common).
+        weights = {w: (2 if w not in STOP else 1) for w in words}
+
         rows = await page.query_selector_all("tr")
-        target_row = None
+
+        def score_text(t: str) -> int:
+            s = 0
+            for w, wt in weights.items():
+                if w in t:
+                    s += wt
+                # Also match prefix: "BROTHER" in "BROTHERS" (already substring) - covered
+            return s
+
+        best_row = None
+        best_score = 0
         for row in rows:
             try:
                 text = ((await row.inner_text()) or "").upper()
-                if dist and dist in text:
-                    target_row = row
-                    break
+                if not text or "ORDER FEED" not in text:
+                    # Only score rows that actually have an Order Feed button
+                    continue
+                s = score_text(text)
+                if s > best_score:
+                    best_score = s
+                    best_row = row
             except Exception:
                 continue
 
-        # If we didn't find a match, try more loosely: look for cells containing the first word
-        if not target_row and dist:
-            first_word = dist.split()[0]
-            for row in rows:
-                try:
-                    text = ((await row.inner_text()) or "").upper()
-                    if first_word in text:
-                        target_row = row
-                        break
-                except Exception:
-                    continue
-
-        if not target_row:
+        if not best_row or best_score == 0:
             return False
 
         for sel in [
@@ -327,15 +344,18 @@ class SunshopAdapter(BaseAdapter):
             'button:has-text("Order Feed")',
             'a:has-text("Orderfeed")',
             'a:has-text("Feed")',
-            'a:has-text("Order")',
-            'button:has-text("Order")',
             'a.btn',
-            'button',
+            'button.btn',
             'a',
+            'button',
         ]:
             try:
-                btn = await target_row.query_selector(sel)
+                btn = await best_row.query_selector(sel)
                 if btn and await btn.is_visible():
+                    text = ((await btn.inner_text()) or "").upper()
+                    # Skip Delete / View / Download buttons
+                    if any(k in text for k in ("DELETE", "VIEW", "DOWNLOAD", "CSV")):
+                        continue
                     await btn.click()
                     try:
                         await page.wait_for_load_state("networkidle", timeout=20000)
@@ -574,21 +594,26 @@ class SunshopAdapter(BaseAdapter):
 
             # 6. Read the populated Order Feed form (Stock, matched product name)
             item = await self._read_order_feed(page)
-            if not item or (not item.matched_name and not item.available_qty):
-                # Fall back to generic table parsing in case a table did render
-                items = await _extract_table_data(page)
-                outcome.items = items
-                if not items:
-                    outcome.status = "NOT_FOUND"
-                    outcome.detail = "Product picked but Stock field was empty"
-                    return outcome
-            else:
-                outcome.items = [item]
+
+            # Determine if we actually landed on a real product match.
+            # A real autocomplete pick populates the Stock field. If Stock is empty AND
+            # matched_name equals what we typed, the autocomplete probably returned nothing.
+            def _stock_populated(it) -> bool:
+                s = (it.available_qty or "").strip() if it else ""
+                return s != ""
+
+            if not item or (not _stock_populated(item) and not item.mrp and not item.batch):
+                outcome.status = "NOT_FOUND"
+                outcome.detail = "Product typed but distributor's autocomplete returned no matching item (Stock empty)"
+                outcome.items = []
+                return outcome
+
+            outcome.items = [item]
 
             total_qty = 0
             for it in outcome.items:
                 v = _parse_int(it.available_qty)
-                if v:
+                if v is not None:
                     total_qty += v
             outcome.debug["totalAvailableQty"] = total_qty
             outcome.can_fulfill = total_qty >= (quantity or 0) if quantity else None

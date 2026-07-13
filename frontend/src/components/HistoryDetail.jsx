@@ -6,7 +6,7 @@ const HistoryDetail = ({ entry, onClose }) => {
   const open = !!entry;
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-3xl border-neutral-950 rounded-sm p-0 gap-0 max-h-[92vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-3xl border-emerald-600 rounded-sm p-0 gap-0 max-h-[92vh] overflow-hidden flex flex-col">
         {entry && (
           <>
             <DialogHeader className="px-6 pt-6 pb-4 border-b border-neutral-200 shrink-0">
@@ -45,7 +45,7 @@ const HistoryDetail = ({ entry, onClose }) => {
 };
 
 const MiniStat = ({ label, value, strong }) => (
-  <div className={`border rounded-sm px-3 py-2.5 ${strong ? 'bg-neutral-950 text-white border-neutral-950' : 'border-neutral-300'}`}>
+  <div className={`border rounded-sm px-3 py-2.5 ${strong ? 'bg-emerald-600 text-white border-emerald-600' : 'border-neutral-300'}`}>
     <div className="text-[18px] font-extrabold mono-track-tight tabular-nums leading-none">{value}</div>
     <div className={`mt-1.5 text-[9px] mono-track-wide font-medium ${strong ? 'text-neutral-300' : 'text-neutral-500'}`}>{label}</div>
   </div>

@@ -19,13 +19,18 @@ const Layout = ({ children }) => {
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-white text-neutral-950">
+      {/* Brand accent bar */}
+      <div className="h-1 w-full bg-emerald-600" />
       <div className="mx-auto w-full max-w-3xl flex-1 flex flex-col">
         {/* Header */}
-        <header className="px-6 pt-8 pb-5 border-b border-neutral-200">
-          <h1 className="text-[28px] sm:text-[32px] font-extrabold mono-track leading-none">
-            {meta.title}
-          </h1>
-          <p className="mt-2 text-[11px] sm:text-xs text-neutral-500 mono-track-wide font-medium">
+        <header className="px-6 pt-7 pb-5 border-b border-neutral-200">
+          <div className="flex items-baseline gap-2">
+            <div className="w-2 h-6 bg-emerald-600 rounded-sm" />
+            <h1 className="text-[28px] sm:text-[32px] font-extrabold mono-track leading-none text-neutral-950">
+              {meta.title}
+            </h1>
+          </div>
+          <p className="mt-2 text-[11px] sm:text-xs text-neutral-500 mono-track-wide font-medium pl-4">
             {meta.subtitle}
           </p>
         </header>
@@ -43,7 +48,7 @@ const Layout = ({ children }) => {
               to={to}
               className={({ isActive }) =>
                 `flex flex-col items-center justify-center gap-1.5 py-3.5 press ${
-                  isActive ? 'text-neutral-950' : 'text-neutral-400 hover:text-neutral-700'
+                  isActive ? 'text-emerald-700' : 'text-neutral-400 hover:text-emerald-600'
                 }`
               }
             >

@@ -67,7 +67,7 @@ const HistoryPage = () => {
               disabled={fetchingDetail}
               className="w-full text-left border border-neutral-300 rounded-sm px-4 py-3.5 card-hover bg-white flex items-center gap-3"
             >
-              <div className="w-9 h-9 shrink-0 border border-neutral-950 rounded-sm flex items-center justify-center">
+              <div className="w-9 h-9 shrink-0 border border-emerald-600 rounded-sm flex items-center justify-center">
                 <Package className="w-4 h-4" strokeWidth={1.8} />
               </div>
               <div className="min-w-0 flex-1">

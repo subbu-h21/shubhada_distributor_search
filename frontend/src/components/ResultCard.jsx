@@ -3,8 +3,8 @@ import { CheckCircle2, XCircle, AlertOctagon, KeyRound, ChevronDown, ChevronUp, 
 import { screenshotUrl } from '../lib/api';
 
 const STATUS_META = {
-  SUCCESS:      { label: 'SUCCESS',      Icon: CheckCircle2,  tone: 'bg-neutral-950 text-white border-neutral-950' },
-  NOT_FOUND:    { label: 'NOT FOUND',    Icon: XCircle,        tone: 'bg-white text-neutral-950 border-neutral-950' },
+  SUCCESS:      { label: 'SUCCESS',      Icon: CheckCircle2,  tone: 'bg-emerald-600 text-white border-emerald-600' },
+  NOT_FOUND:    { label: 'NOT FOUND',    Icon: XCircle,        tone: 'bg-white text-neutral-950 border-emerald-600' },
   LOGIN_FAILED: { label: 'LOGIN FAILED', Icon: KeyRound,       tone: 'bg-white text-neutral-500 border-neutral-400' },
   ERROR:        { label: 'ERROR',        Icon: AlertOctagon,   tone: 'bg-white text-neutral-500 border-neutral-400' },
 };
@@ -28,7 +28,7 @@ const ResultCard = ({ result, requestedQty }) => {
     <div className="border border-neutral-300 rounded-sm">
       {/* Header */}
       <div className="px-3 py-3 flex items-start gap-3 border-b border-neutral-200">
-        <div className="w-8 h-8 shrink-0 border border-neutral-950 rounded-sm flex items-center justify-center">
+        <div className="w-8 h-8 shrink-0 border border-emerald-600 rounded-sm flex items-center justify-center">
           <Icon className="w-4 h-4" strokeWidth={2} />
         </div>
         <div className="min-w-0 flex-1">
@@ -37,7 +37,7 @@ const ResultCard = ({ result, requestedQty }) => {
             <span className="text-[9px] mono-track-wide font-semibold border border-neutral-300 rounded-sm px-1.5 py-0.5 text-neutral-500">{result.portal}</span>
             <span className={`text-[9px] mono-track-wide font-semibold rounded-sm px-1.5 py-0.5 border ${meta.tone}`}>{meta.label}</span>
             {result.canFulfill === true && (
-              <span className="text-[9px] mono-track-wide font-semibold rounded-sm px-1.5 py-0.5 bg-neutral-950 text-white">CAN FULFILL QTY {requestedQty}</span>
+              <span className="text-[9px] mono-track-wide font-semibold rounded-sm px-1.5 py-0.5 bg-emerald-600 text-white">CAN FULFILL QTY {requestedQty}</span>
             )}
             {result.canFulfill === false && (
               <span className="text-[9px] mono-track-wide font-semibold rounded-sm px-1.5 py-0.5 border border-neutral-400 text-neutral-500">SHORT OF QTY {requestedQty}</span>
@@ -93,7 +93,7 @@ const ResultCard = ({ result, requestedQty }) => {
           {showShots && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pb-2 pt-1">
               {shots.map((s) => (
-                <a key={s.file} href={screenshotUrl(s.file)} target="_blank" rel="noreferrer" className="group block border border-neutral-300 hover:border-neutral-950 rounded-sm overflow-hidden">
+                <a key={s.file} href={screenshotUrl(s.file)} target="_blank" rel="noreferrer" className="group block border border-neutral-300 hover:border-emerald-600 rounded-sm overflow-hidden">
                   <img src={screenshotUrl(s.file)} alt={s.tag} className="w-full h-24 sm:h-32 object-cover object-top" />
                   <div className="px-2 py-1 flex items-center justify-between border-t border-neutral-200 bg-white">
                     <span className="text-[9px] mono-track-wide font-semibold">{s.tag}</span>

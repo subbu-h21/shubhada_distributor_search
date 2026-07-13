@@ -67,7 +67,7 @@ const PortalsPage = () => {
                 <span
                   className={`shrink-0 text-[10px] mono-track-wide font-semibold rounded-sm px-2.5 py-1.5 ${
                     isActive
-                      ? 'bg-neutral-950 text-white'
+                      ? 'bg-emerald-600 text-white'
                       : 'bg-white text-neutral-400 border border-neutral-300'
                   }`}
                 >

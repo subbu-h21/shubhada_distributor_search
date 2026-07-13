@@ -99,7 +99,7 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="bottom" className="rounded-t-lg border-neutral-950 max-h-[92vh] overflow-y-auto">
+      <SheetContent side="bottom" className="rounded-t-lg border-emerald-600 max-h-[92vh] overflow-y-auto">
         <SheetHeader className="text-left">
           <SheetTitle className="text-[20px] font-extrabold mono-track uppercase">
             {isEdit ? 'EDIT DISTRIBUTOR' : 'ADD DISTRIBUTOR'}
@@ -112,12 +112,12 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
         <form onSubmit={submit} className="mt-5 space-y-4">
           <Field label="DISTRIBUTOR NAME">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. saroj pharma"
-              className="w-full h-12 px-4 border border-neutral-300 rounded-sm focus:outline-none focus:border-neutral-950 text-[15px]" />
+              className="w-full h-12 px-4 border border-neutral-300 rounded-sm focus:outline-none focus:border-emerald-600 text-[15px]" />
           </Field>
 
           <Field label="PORTAL URL">
             <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.sunshop.co.in"
-              className="w-full h-12 px-4 border border-neutral-300 rounded-sm focus:outline-none focus:border-neutral-950 text-[13px] font-mono" />
+              className="w-full h-12 px-4 border border-neutral-300 rounded-sm focus:outline-none focus:border-emerald-600 text-[13px] font-mono" />
           </Field>
 
           <Field label="PORTAL">
@@ -125,7 +125,7 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
               {portals.map((p) => (
                 <button key={p.id} type="button" onClick={() => setPortal(p.name)}
                   className={`h-10 px-3 rounded-sm text-[11px] mono-track-wide font-semibold border press ${
-                    portal === p.name ? 'bg-neutral-950 text-white border-neutral-950' : 'bg-white text-neutral-950 border-neutral-300 hover:border-neutral-950'
+                    portal === p.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-neutral-950 border-neutral-300 hover:border-emerald-600'
                   }`}>{p.name}</button>
               ))}
             </div>
@@ -136,7 +136,7 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
               {PORTAL_TYPES.map((p) => (
                 <button key={p.value} type="button" onClick={() => setPortalType(p.value)}
                   className={`h-10 px-3 rounded-sm text-[11px] mono-track-wide font-semibold border press ${
-                    portalType === p.value ? 'bg-neutral-950 text-white border-neutral-950' : 'bg-white text-neutral-950 border-neutral-300 hover:border-neutral-950'
+                    portalType === p.value ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-neutral-950 border-neutral-300 hover:border-emerald-600'
                   }`} title={p.hint}>{p.label}</button>
               ))}
             </div>
@@ -150,13 +150,13 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
 
             <Field label="USERNAME">
               <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="portal login id" autoComplete="off"
-                className="w-full h-12 px-4 border border-neutral-300 rounded-sm focus:outline-none focus:border-neutral-950 text-[14px] font-mono" />
+                className="w-full h-12 px-4 border border-neutral-300 rounded-sm focus:outline-none focus:border-emerald-600 text-[14px] font-mono" />
             </Field>
 
             <Field label={isEdit && distributor.hasCredentials ? 'PASSWORD (LEAVE BLANK TO KEEP EXISTING)' : 'PASSWORD'}>
               <div className="relative">
                 <input value={password} onChange={(e) => setPassword(e.target.value)} type={showPassword ? 'text' : 'password'} placeholder="••••••••" autoComplete="new-password"
-                  className="w-full h-12 px-4 pr-11 border border-neutral-300 rounded-sm focus:outline-none focus:border-neutral-950 text-[14px] font-mono" />
+                  className="w-full h-12 px-4 pr-11 border border-neutral-300 rounded-sm focus:outline-none focus:border-emerald-600 text-[14px] font-mono" />
                 <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-neutral-500 hover:text-neutral-950">
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -166,7 +166,7 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
 
           {testResult && (
             <div className={`border rounded-sm px-3 py-2.5 flex items-start gap-2 text-[11px] mono-track-tight ${
-              testResult.ok ? 'border-neutral-950 bg-neutral-50 text-neutral-950' : 'border-neutral-400 bg-neutral-50 text-neutral-700'
+              testResult.ok ? 'border-emerald-600 bg-neutral-50 text-neutral-950' : 'border-neutral-400 bg-neutral-50 text-neutral-700'
             }`}>
               {testResult.ok ? <ShieldCheck className="w-3.5 h-3.5 mt-0.5" /> : <ShieldAlert className="w-3.5 h-3.5 mt-0.5" />}
               <div>
@@ -179,13 +179,13 @@ const AddDistributorSheet = ({ open, onOpenChange, distributor = null }) => {
           <div className="grid grid-cols-2 gap-2 pt-1">
             {isEdit && (
               <button type="button" onClick={runTestLogin} disabled={testing || saving}
-                className="h-14 border border-neutral-950 hover:bg-neutral-50 rounded-sm flex items-center justify-center gap-2 text-[12px] mono-track-wide font-bold press disabled:opacity-70">
+                className="h-14 border border-emerald-600 hover:bg-neutral-50 rounded-sm flex items-center justify-center gap-2 text-[12px] mono-track-wide font-bold press disabled:opacity-70">
                 {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                 {testing ? 'TESTING…' : 'TEST LOGIN'}
               </button>
             )}
             <button type="submit" disabled={saving}
-              className={`h-14 bg-neutral-950 hover:bg-neutral-800 disabled:opacity-70 text-white rounded-sm flex items-center justify-center text-[13px] mono-track-wide font-bold press ${isEdit ? '' : 'col-span-2'}`}>
+              className={`h-14 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 text-white rounded-sm flex items-center justify-center text-[13px] mono-track-wide font-bold press ${isEdit ? '' : 'col-span-2'}`}>
               {saving ? 'SAVING…' : (isEdit ? 'SAVE CHANGES' : 'ADD DISTRIBUTOR')}
             </button>
           </div>
