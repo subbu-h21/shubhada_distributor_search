@@ -369,9 +369,14 @@ class SunshopAdapter(BaseAdapter):
 
     # ---------- Search product ----------
     async def _search_product(self, page, product: str, quantity: int) -> bool:
-        """On the Order Feed page, type into the Product autocomplete, pick the first suggestion,
-        then read the Stock value. Returns True if a suggestion was selected."""
-        # Find the product autocomplete input
+        """On the Order Feed page: type the FIRST significant token of the product,
+        wait for the autocomplete list to render, then pick the suggestion whose text
+        contains ALL of the user's tokens (with special characters normalized).
+
+        This handles cases where the user types 'telmikind am' but the portal has it
+        stored as 'telmikind-am' or 'TELMIKIND AM 40' — hyphens, dots, dashes are ignored.
+        """
+        # Locate the product input
         search_el = None
         for sel in [
             'input[placeholder*="Enter Product" i]',
@@ -392,42 +397,32 @@ class SunshopAdapter(BaseAdapter):
         if not search_el:
             return False
 
+        # Tokenize the user's query: drop special chars, keep alphanumerics
+        raw_tokens = re.findall(r"[a-z0-9]+", product.lower())
+        if not raw_tokens:
+            return False
+        first_token = raw_tokens[0]
+
+        # Focus & clear
         try:
             await search_el.click()
         except Exception:
             pass
-        # Clear any existing value
         try:
             await search_el.fill("")
         except Exception:
             pass
 
-        # Type the product WORD-BY-WORD, pausing between words so the portal's
-        # autocomplete has time to narrow down (many pharma portals lag on AJAX).
-        # This also helps avoid mismatches when product IDs differ slightly across distributors.
-        words = [w for w in product.strip().split() if w]
-        for i, word in enumerate(words):
-            if i > 0:
-                # Type a space before each subsequent word
-                try:
-                    await search_el.type(" ")
-                except Exception:
-                    pass
-                await page.wait_for_timeout(200)
-            # Type each character with a small delay so onkeyup autocomplete fires
-            await search_el.type(word, delay=80)
-            # Give the autocomplete AJAX enough time between words
-            await page.wait_for_timeout(600)
+        # Type only the first token — broader autocomplete list
+        await search_el.type(first_token, delay=80)
+        # Give the autocomplete AJAX time
+        await page.wait_for_timeout(1400)
 
-        # Extra wait after the last word for the final autocomplete list to settle
-        await page.wait_for_timeout(900)
-
-        # Capture the autocomplete state for diagnostics
+        # Diagnostic screenshot of the suggestion list
         await self._screenshot(page, "autocomplete-open")
 
-        # Try to click the first visible autocomplete suggestion
-        picked = False
-        for sel in [
+        # Collect every visible autocomplete suggestion
+        suggestion_selectors = [
             'ul.ui-autocomplete li:visible',
             'ul.ui-autocomplete .ui-menu-item:visible',
             '.autocomplete-suggestion:visible',
@@ -436,17 +431,58 @@ class SunshopAdapter(BaseAdapter):
             'ul.dropdown-menu.show li a',
             'ul.dropdown-menu:visible li a',
             'div[role="listbox"] div[role="option"]',
-        ]:
+        ]
+        candidates = []
+        for sel in suggestion_selectors:
             try:
-                sug = await page.query_selector(sel)
-                if sug and await sug.is_visible():
-                    await sug.click()
-                    picked = True
+                els = await page.query_selector_all(sel)
+                for e in els:
+                    try:
+                        if await e.is_visible():
+                            txt = ((await e.inner_text()) or "").strip()
+                            if txt:
+                                candidates.append((e, txt))
+                    except Exception:
+                        continue
+                if candidates:
                     break
             except Exception:
                 continue
 
-        # If no suggestion element matched, fall back to keyboard: Down + Enter
+        def _normalize(s: str) -> str:
+            # Lowercase and collapse all non-alphanumerics into a single space
+            return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+        target_norm = _normalize(product)
+        target_tokens = raw_tokens
+
+        best_el, best_score = None, -1
+        for el, txt in candidates:
+            norm = _normalize(txt)
+            # Count how many of the user's tokens are present as whole tokens or substrings
+            score = 0
+            for tok in target_tokens:
+                if tok in norm.split():
+                    score += 2  # exact token match — best
+                elif tok in norm:
+                    score += 1  # substring match
+            # Bonus if the full normalized target appears
+            if target_norm and target_norm in norm:
+                score += 5
+            if score > best_score:
+                best_score = score
+                best_el = el
+
+        # If we found a scored suggestion, click it
+        picked = False
+        if best_el and best_score >= 1:
+            try:
+                await best_el.click()
+                picked = True
+            except Exception:
+                pass
+
+        # Fallback: keyboard navigation
         if not picked:
             try:
                 await page.keyboard.press("ArrowDown")
@@ -456,7 +492,7 @@ class SunshopAdapter(BaseAdapter):
             except Exception:
                 pass
 
-        # Give the form time to populate Stock / other fields
+        # Give the form time to populate Stock / other fields after selection
         await page.wait_for_timeout(1000)
 
         # Optionally fill quantity
