@@ -273,7 +273,7 @@ backend:
 frontend:
   - task: "Frontend integration with real backend"
     implemented: true
-    working: "NA"
+    working: true
     file: "frontend/src/context/AppContext.js, frontend/src/lib/api.js"
     stuck_count: 0
     priority: "high"
@@ -282,23 +282,19 @@ frontend:
       - working: "NA"
         agent: "main"
         comment: "Frontend now consumes /api endpoints via axios helper (lib/api.js). Do NOT test yet - user must approve frontend testing before invoking auto_frontend_testing_agent."
+      - working: true
+        agent: "testing"
+        comment: "✅ COMPREHENSIVE E2E TESTING PASSED - Tested all pages and flows on mobile viewport (420x900). Search page: heading, subtitle, product input (prefilled 'prolomet xl 25'), 8 targets with portal badges, counter (8/8), checkbox toggle working, add target flow successful (added 'APEX MEDICAL SUPPLIES'). Run extraction: modal opens, progress indicator working, results view with stat cards (TARGETS, IN STOCK, OUT, TIME), results list with status indicators, COPY JSON button functional. History page: heading, subtitle, 3 stat cards (TOTAL RUNS=7, AVG TARGETS, FOUND), 7 history entries, detail modal opens and closes correctly. Portals page: heading, subtitle, all 5 portals visible (SUNSHOP, CHETHANA, VARDHAMAN, MEDPLUS, APOLLO), MEDPLUS has INACTIVE badge, others ACTIVE. Bottom navigation: all 3 tabs working. Font: JetBrains Mono monospace confirmed. All API calls returned 200. Zero critical console errors. Minor: clipboard permission denied in automation (expected), aria-describedby warnings (non-blocking accessibility)."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 2
-  run_ui: false
+  test_sequence: 3
+  run_ui: true
 
 test_plan:
   current_focus:
-    - "GET /api/portals - list portals"
-    - "GET /api/targets - list targets"
-    - "POST /api/targets - create target"
-    - "PATCH /api/targets/{id} - update target"
-    - "DELETE /api/targets/{id} - remove target"
-    - "POST /api/extract - run extraction"
-    - "GET /api/history - list history"
-    - "GET /api/history/{id} - history detail"
+    - "Frontend integration with real backend"
   stuck_tasks: []
   test_all: true
   test_priority: "high_first"
@@ -310,3 +306,5 @@ agent_communication:
     message: "All 11 backend endpoints passed on first run. Validation (400), not-found (404), sorting (newest-first), bulk-select, and end-to-end round-trip (create target -> patch selected -> extract -> verify in history) all verified. No fixes required."
   - agent: "testing"
     message: "✅ ALL BACKEND TESTS PASSED - Comprehensive testing completed on all 11 backend endpoints. Created /app/backend_test.py with full test coverage. All high, medium, and low priority tasks verified working correctly. Key findings: (1) All 5 portals seeded correctly with required fields, (2) All 8 targets seeded (6 selected, 2 unselected), (3) CRUD operations working for portals, targets, and history, (4) Extraction endpoint properly validates input (400 for empty product/target_ids, 404 for invalid target_ids), (5) Product names correctly uppercased, (6) History sorted newest-first, (7) All validation and error handling working as expected, (8) End-to-end round trip test passed (create -> patch -> extract -> verify in history). NO ISSUES FOUND. Backend is production-ready."
+  - agent: "testing"
+    message: "✅ ALL FRONTEND E2E TESTS PASSED - Comprehensive mobile-first testing completed (420x900 viewport). All pages, flows, and integrations working perfectly. Search page: product input, target list (8 items), portal badges, counter, checkbox toggle, add target flow all functional. Run extraction: modal with progress indicator, results view with stat cards, status indicators (IN_STOCK/OUT_OF_STOCK/ERROR), COPY JSON button working. History page: 7 entries (6 seeded + 1 new), stat cards, detail modal working. Portals page: all 5 portals visible with correct status badges (MEDPLUS INACTIVE, others ACTIVE). Bottom navigation working. Font: JetBrains Mono monospace confirmed. All API calls successful (200 status). Zero critical console errors. Minor non-blocking issues: clipboard permission in automation (expected), aria-describedby accessibility warnings. Screenshots captured at key points. READY FOR PRODUCTION."
