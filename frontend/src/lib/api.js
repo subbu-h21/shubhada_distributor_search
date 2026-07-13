@@ -30,6 +30,20 @@ export const HistoryAPI = {
   remove: (id) => api.delete(`/history/${id}`).then((r) => r.data),
 };
 
+export const ProductsAPI = {
+  count: () => api.get('/products/count').then((r) => r.data),
+  search: (q, limit = 20) => api.get('/products/search', { params: { q, limit } }).then((r) => r.data),
+  clear: () => api.delete('/products/clear').then((r) => r.data),
+  upload: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return axios.post(`${API_BASE}/products/upload`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000, // 5 min for large files
+    }).then((r) => r.data);
+  },
+};
+
 export const ExtractAPI = {
   run: (product, quantity, targetIds) =>
     api.post('/extract', { product, quantity: quantity ? Number(quantity) : null, target_ids: targetIds }).then((r) => r.data),

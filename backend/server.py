@@ -1,10 +1,12 @@
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import re
+import io
 import logging
 import asyncio
 import random
@@ -503,6 +505,167 @@ async def get_screenshot(filename: str):
     if not p.exists():
         raise HTTPException(404, "Screenshot not found")
     return FileResponse(str(p), media_type="image/png")
+
+
+# ============================================================
+# PRODUCT MASTER
+# ============================================================
+def _normalize_product(s: str) -> str:
+    if not s:
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def _pick_col(headers, aliases):
+    """Return the header value that matches any alias (case-insensitive contains)."""
+    lower_map = {h.lower(): h for h in headers if isinstance(h, str)}
+    for a in aliases:
+        a_low = a.lower()
+        for k, orig in lower_map.items():
+            if a_low == k or a_low in k:
+                return orig
+    return None
+
+
+class Product(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    pack: Optional[str] = None
+    strength: Optional[str] = None
+    mrp: Optional[str] = None
+    manufacturer: Optional[str] = None
+    code: Optional[str] = None
+    norm: str = ""
+
+
+@api_router.get("/products/count")
+async def products_count():
+    return {"count": await db.products.count_documents({})}
+
+
+@api_router.get("/products/search")
+async def products_search(q: str = Query("", min_length=0, max_length=100), limit: int = Query(20, ge=1, le=50)):
+    q_norm = _normalize_product(q)
+    if not q_norm:
+        # Return top N by name
+        docs = await db.products.find().limit(limit).to_list(limit)
+        return [strip_mongo(d) for d in docs]
+
+    # Split query into tokens; every token must appear in `norm` (prefix or substring)
+    tokens = [t for t in q_norm.split() if t]
+
+    # Build regex for prefix on first token; fall back to substring for others
+    # Fast prefix on `norm` (indexed) then further filter with $all-style regex
+    query = {"norm": {"$regex": f".*{re.escape(tokens[0])}", "$options": "i"}}
+    if len(tokens) > 1:
+        # Ensure all remaining tokens are present in norm too
+        query = {"$and": [query] + [
+            {"norm": {"$regex": re.escape(t), "$options": "i"}} for t in tokens[1:]
+        ]}
+
+    cursor = db.products.find(query).limit(limit)
+    docs = await cursor.to_list(limit)
+    return [strip_mongo(d) for d in docs]
+
+
+@api_router.delete("/products/clear")
+async def products_clear():
+    r = await db.products.delete_many({})
+    return {"deleted": r.deleted_count}
+
+
+@api_router.post("/products/upload")
+async def products_upload(file: UploadFile = File(...)):
+    """Accepts .xlsx or .csv, extracts columns matching Product Name / Pack / Strength / MRP / Manufacturer / Code."""
+    try:
+        import pandas as pd
+    except Exception:
+        raise HTTPException(500, "pandas not installed on server")
+
+    filename = (file.filename or "").lower()
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "Empty file")
+
+    try:
+        if filename.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content), dtype=str, keep_default_na=False)
+        elif filename.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(content), dtype=str)
+            df = df.fillna("")
+        else:
+            raise HTTPException(400, "Unsupported file type. Please upload .xlsx or .csv")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse file: {e}")
+
+    if df.empty:
+        raise HTTPException(400, "File contains no rows")
+
+    headers = list(df.columns)
+    name_col = _pick_col(headers, ["product name", "product", "name", "item", "item name", "description"])
+    pack_col = _pick_col(headers, ["pack", "packing", "size"])
+    strength_col = _pick_col(headers, ["strength", "mg", "dosage"])
+    mrp_col = _pick_col(headers, ["mrp"])
+    mfr_col = _pick_col(headers, ["manufacturer", "mfr", "company", "brand"])
+    code_col = _pick_col(headers, ["code", "product code", "sku", "barcode", "id"])
+
+    if not name_col:
+        raise HTTPException(400, f"Could not find a Product Name column in: {headers}. Please rename one to 'Product Name'.")
+
+    # Wipe existing products before importing new master (upload replaces)
+    await db.products.delete_many({})
+
+    now = datetime.utcnow()
+    docs: List[Dict[str, Any]] = []
+    inserted = 0
+    for _, row in df.iterrows():
+        name = str(row.get(name_col, "") or "").strip()
+        if not name:
+            continue
+        p = {
+            "id": str(uuid.uuid4()),
+            "name": name.upper(),
+            "pack": (str(row.get(pack_col, "") or "").strip() or None) if pack_col else None,
+            "strength": (str(row.get(strength_col, "") or "").strip() or None) if strength_col else None,
+            "mrp": (str(row.get(mrp_col, "") or "").strip() or None) if mrp_col else None,
+            "manufacturer": (str(row.get(mfr_col, "") or "").strip() or None) if mfr_col else None,
+            "code": (str(row.get(code_col, "") or "").strip() or None) if code_col else None,
+            "norm": _normalize_product(name),
+            "created_at": now,
+        }
+        docs.append(p)
+        # Chunked insert to avoid huge single-shot
+        if len(docs) >= 2000:
+            try:
+                await db.products.insert_many(docs, ordered=False)
+                inserted += len(docs)
+            except Exception as e:
+                logger.warning(f"insert_many chunk error: {e}")
+            docs = []
+    if docs:
+        try:
+            await db.products.insert_many(docs, ordered=False)
+            inserted += len(docs)
+        except Exception as e:
+            logger.warning(f"insert_many tail error: {e}")
+
+    # Ensure index for fast search on `norm`
+    try:
+        await db.products.create_index("norm")
+    except Exception:
+        pass
+
+    return {
+        "inserted": inserted,
+        "detectedColumns": {
+            "name": name_col, "pack": pack_col, "strength": strength_col,
+            "mrp": mrp_col, "manufacturer": mfr_col, "code": code_col,
+        },
+    }
+
+
 
 
 # ============================================================

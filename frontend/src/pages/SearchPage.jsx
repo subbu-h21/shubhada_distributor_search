@@ -3,6 +3,7 @@ import { Zap, Check, Plus, X, Pencil, KeyRound } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import ExtractionModal from '../components/ExtractionModal';
 import AddDistributorSheet from '../components/AddDistributorSheet';
+import ProductCombobox from '../components/ProductCombobox';
 import { toast } from 'sonner';
 
 const SearchPage = () => {
@@ -33,8 +34,7 @@ const SearchPage = () => {
       <section className="pt-3 grid grid-cols-3 gap-3">
         <div className="col-span-2">
           <label className="block text-[11px] text-neutral-500 mono-track-wide font-medium mb-2">PRODUCT NAME</label>
-          <input value={product} onChange={(e) => setProduct(e.target.value)} placeholder="enter product name"
-            className="w-full h-14 px-4 border border-neutral-300 rounded-sm bg-white text-[16px] font-medium tracking-tight focus:outline-none focus:border-emerald-600 placeholder:text-neutral-400" />
+          <ProductCombobox value={product} onChange={setProduct} placeholder="enter product name" />
         </div>
         <div>
           <label className="block text-[11px] text-neutral-500 mono-track-wide font-medium mb-2">QTY</label>
