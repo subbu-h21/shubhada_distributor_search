@@ -409,7 +409,7 @@ async def run_extraction(payload: ExtractRequest):
                 page = await ctx.new_page()
                 adapter = get_adapter(portal_type)
                 adapter.screenshotter = _shot
-                outcome = await adapter.extract(page, url, doc["username"], password, product_upper, qty or 0)
+                outcome = await adapter.extract(page, url, doc["username"], password, product_upper, qty or 0, distributor_name=name)
                 return {**base, **outcome.to_dict()}
             except Exception as e:
                 return {**base, **{"status": "ERROR", "detail": f"{e.__class__.__name__}: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
