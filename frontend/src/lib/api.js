@@ -6,19 +6,22 @@ export const API_BASE = `${BACKEND_URL}/api`;
 const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 30000,
+  timeout: 120000, // 2 min — real scraping can be slow
 });
+
+export const screenshotUrl = (filename) => (filename ? `${API_BASE}/screenshots/${filename}` : null);
 
 export const PortalsAPI = {
   list: () => api.get('/portals').then((r) => r.data),
 };
 
-export const TargetsAPI = {
+export const DistributorsAPI = {
   list: () => api.get('/targets').then((r) => r.data),
   create: (payload) => api.post('/targets', payload).then((r) => r.data),
   update: (id, payload) => api.patch(`/targets/${id}`, payload).then((r) => r.data),
   remove: (id) => api.delete(`/targets/${id}`).then((r) => r.data),
   bulkSelect: (selected) => api.post('/targets/bulk-select', { selected }).then((r) => r.data),
+  testLogin: (id) => api.post(`/targets/${id}/test-login`).then((r) => r.data),
 };
 
 export const HistoryAPI = {
@@ -28,8 +31,8 @@ export const HistoryAPI = {
 };
 
 export const ExtractAPI = {
-  run: (product, targetIds) =>
-    api.post('/extract', { product, target_ids: targetIds }).then((r) => r.data),
+  run: (product, quantity, targetIds) =>
+    api.post('/extract', { product, quantity: quantity ? Number(quantity) : null, target_ids: targetIds }).then((r) => r.data),
 };
 
 export default api;

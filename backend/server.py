@@ -1,4 +1,6 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,28 +11,48 @@ import random
 import uuid
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
-from datetime import datetime
-
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# Configure Playwright browsers path BEFORE importing playwright
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers"))
+
+from security import encrypt_secret, decrypt_secret
+from adapters import get_adapter
+
+# Playwright is imported lazily inside extraction to keep app startup snappy
+_playwright = None
+
+
+# --- Screenshot directory ---
+SCREENSHOTS_DIR = Path(os.environ.get("SCREENSHOTS_DIR", str(ROOT_DIR / "data/screenshots")))
+SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+RETENTION_DAYS = int(os.environ.get("SCREENSHOT_RETENTION_DAYS", "7"))
+
+# --- DB setup ---
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# --- App ---
 app = FastAPI(title="PharmaScrape API")
 api_router = APIRouter(prefix="/api")
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("server")
 
-# ---------------------------- Models ----------------------------
+
+# ============================================================
+# MODELS
+# ============================================================
 class Portal(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     baseUrl: str
-    status: str = "ACTIVE"  # ACTIVE | INACTIVE
+    status: str = "ACTIVE"
     description: Optional[str] = ""
 
 
@@ -41,26 +63,36 @@ class PortalCreate(BaseModel):
     description: Optional[str] = ""
 
 
-class Target(BaseModel):
+class Distributor(BaseModel):
+    """Distributor with credentials. Password never returned in responses."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     url: str
-    portal: str
+    portal: str                 # e.g. "SUNSHOP" | "CHETHANA" | "VARDHAMAN"
+    portalType: str = "GENERIC" # adapter to use — SUNSHOP | GENERIC etc.
+    username: Optional[str] = None
+    hasCredentials: bool = False
     selected: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class TargetCreate(BaseModel):
+class DistributorCreate(BaseModel):
     name: str
     url: str
     portal: str
+    portalType: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
     selected: bool = True
 
 
-class TargetUpdate(BaseModel):
+class DistributorUpdate(BaseModel):
     name: Optional[str] = None
     url: Optional[str] = None
     portal: Optional[str] = None
+    portalType: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
     selected: Optional[bool] = None
 
 
@@ -68,173 +100,176 @@ class BulkSelect(BaseModel):
     selected: bool
 
 
-class ExtractionResult(BaseModel):
-    targetId: str
-    targetName: str
-    portal: str
-    url: str
-    product: str
-    status: str  # IN_STOCK | OUT_OF_STOCK | ERROR
-    price: Optional[str] = None
-    mrp: Optional[str] = None
-    stock: int = 0
-    pack: Optional[str] = None
-    responseMs: int = 0
-    lastUpdated: datetime = Field(default_factory=datetime.utcnow)
-
-
-class HistoryEntry(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    product: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    duration: str
-    targetsRun: int
-    found: int
-    outOfStock: int
-    errors: int = 0
-    status: str  # COMPLETED | PARTIAL
-    results: List[ExtractionResult] = []
-
-
 class ExtractRequest(BaseModel):
     product: str
+    quantity: Optional[int] = None
     target_ids: List[str]
 
 
-# ---------------------------- Helpers ----------------------------
-def strip_mongo_id(doc: dict) -> dict:
+class TestLoginResponse(BaseModel):
+    ok: bool
+    detail: str
+    screenshot: Optional[str] = None
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+def strip_mongo(doc: dict) -> dict:
     if not doc:
         return doc
     doc.pop("_id", None)
+    doc.pop("encryptedPassword", None)  # never expose
     return doc
 
 
+def infer_portal_type(portal: str) -> str:
+    p = (portal or "").upper()
+    if "SUNSHOP" in p:
+        return "SUNSHOP"
+    return "GENERIC"
+
+
+async def _get_browser():
+    """Launch a shared Playwright browser instance."""
+    global _playwright
+    from playwright.async_api import async_playwright
+    if _playwright is None:
+        _playwright = await async_playwright().start()
+    browser = await _playwright.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+    return browser
+
+
+async def _cleanup_old_screenshots():
+    """Delete screenshots older than RETENTION_DAYS."""
+    try:
+        cutoff = datetime.now().timestamp() - RETENTION_DAYS * 86400
+        removed = 0
+        for f in SCREENSHOTS_DIR.glob("*.png"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
+                    removed += 1
+            except Exception:
+                pass
+        if removed:
+            logger.info(f"Cleaned up {removed} old screenshot(s)")
+    except Exception as e:
+        logger.warning(f"Screenshot cleanup failed: {e}")
+
+
 async def seed_if_empty():
-    """Seed portals + targets + history if collections are empty."""
+    """Seed portals + distributors + history if collections are empty."""
     if await db.portals.count_documents({}) == 0:
         portals = [
-            Portal(name="SUNSHOP", baseUrl="https://www.sunshop.co.in", status="ACTIVE", description="Sunshop portal for multiple distributors"),
-            Portal(name="CHETHANA", baseUrl="http://www.chiragpharma.in", status="ACTIVE", description="Chethana distribution portal"),
-            Portal(name="VARDHAMAN", baseUrl="http://easysol.co.in", status="ACTIVE", description="Vardhaman medisales web order portal"),
+            Portal(name="SUNSHOP", baseUrl="https://www.sunshop.co.in", status="ACTIVE", description="Sunshop portal — supports real login + scrape"),
+            Portal(name="CHETHANA", baseUrl="http://www.chethanapharma.in", status="ACTIVE", description="Chethana Pharma portal (adapter pending)"),
+            Portal(name="VARDHAMAN", baseUrl="http://easysol.co.in", status="ACTIVE", description="Vardhaman medisales portal (adapter pending)"),
             Portal(name="MEDPLUS", baseUrl="https://medplus.in", status="INACTIVE", description="MedPlus wholesale portal"),
-            Portal(name="APOLLO", baseUrl="https://apollo.co.in", status="ACTIVE", description="Apollo pharmacy distributor portal"),
+            Portal(name="APOLLO", baseUrl="https://apollo.co.in", status="ACTIVE", description="Apollo pharmacy portal"),
         ]
         await db.portals.insert_many([p.dict() for p in portals])
-        logger.info("Seeded portals collection")
+        logger.info("Seeded portals")
 
     if await db.targets.count_documents({}) == 0:
-        targets = [
-            Target(name="SAROJ PHARMA", url="https://www.sunshop.co.in/sunfilter/saroj", portal="SUNSHOP", selected=True),
-            Target(name="HEGDE BROTHER", url="https://www.sunshop.co.in/sunfilter/hegde", portal="SUNSHOP", selected=True),
-            Target(name="KAPILA PHARMA", url="https://www.sunshop.co.in/sunfilter/kapila", portal="SUNSHOP", selected=True),
-            Target(name="KAPILA MEDICAL AGENCIES", url="https://www.sunshop.co.in/sunfilter/kapila-med", portal="SUNSHOP", selected=True),
-            Target(name="CHIRAG PHARMA", url="http://www.chiragpharma.in/", portal="CHETHANA", selected=True),
-            Target(name="VARDHAMAN MEDISALES PVT LTD", url="http://easysol.co.in/WebOrderRegistration", portal="VARDHAMAN", selected=True),
-            Target(name="SRI SAI MEDICALS", url="https://www.sunshop.co.in/sunfilter/srisai", portal="SUNSHOP", selected=False),
-            Target(name="BHARAT MEDICOS", url="http://easysol.co.in/WebOrderRegistration/bharat", portal="VARDHAMAN", selected=False),
+        seeds = [
+            {"name": "SAROJ PHARMA", "url": "https://www.sunshop.co.in", "portal": "SUNSHOP", "portalType": "SUNSHOP"},
+            {"name": "HEGDE BROTHER", "url": "https://www.sunshop.co.in", "portal": "SUNSHOP", "portalType": "SUNSHOP"},
+            {"name": "KAPILA PHARMA", "url": "https://www.sunshop.co.in", "portal": "SUNSHOP", "portalType": "SUNSHOP"},
+            {"name": "KAPILA MEDICAL AGENCIES", "url": "https://www.sunshop.co.in", "portal": "SUNSHOP", "portalType": "SUNSHOP"},
+            {"name": "CHIRAG PHARMA", "url": "http://www.chethanapharma.in", "portal": "CHETHANA", "portalType": "GENERIC"},
+            {"name": "VARDHAMAN MEDISALES PVT LTD", "url": "http://easysol.co.in", "portal": "VARDHAMAN", "portalType": "GENERIC"},
         ]
-        await db.targets.insert_many([t.dict() for t in targets])
-        logger.info("Seeded targets collection")
-
-    if await db.history.count_documents({}) == 0:
-        seed_history = [
-            HistoryEntry(product="PROLOMET XL 25", timestamp=datetime.fromisoformat("2025-07-12T14:32:00"), duration="4.2s", targetsRun=6, found=4, outOfStock=2, status="COMPLETED"),
-            HistoryEntry(product="PANTOP DSR",    timestamp=datetime.fromisoformat("2025-07-12T11:08:00"), duration="3.8s", targetsRun=8, found=6, outOfStock=2, status="COMPLETED"),
-            HistoryEntry(product="DOLO 650",      timestamp=datetime.fromisoformat("2025-07-11T18:45:00"), duration="5.1s", targetsRun=5, found=5, outOfStock=0, status="COMPLETED"),
-            HistoryEntry(product="AZITHRAL 500",  timestamp=datetime.fromisoformat("2025-07-11T09:20:00"), duration="2.9s", targetsRun=4, found=1, outOfStock=3, status="COMPLETED"),
-            HistoryEntry(product="MONTAIR LC",    timestamp=datetime.fromisoformat("2025-07-10T16:15:00"), duration="6.7s", targetsRun=8, found=3, outOfStock=4, errors=1, status="PARTIAL"),
-            HistoryEntry(product="CROCIN ADVANCE",timestamp=datetime.fromisoformat("2025-07-10T10:02:00"), duration="3.3s", targetsRun=6, found=4, outOfStock=2, status="COMPLETED"),
-        ]
-        await db.history.insert_many([h.dict() for h in seed_history])
-        logger.info("Seeded history collection")
+        docs = []
+        for s in seeds:
+            d = Distributor(**s, selected=True, hasCredentials=False)
+            docs.append(d.dict())
+        await db.targets.insert_many(docs)
+        logger.info("Seeded distributors")
 
 
-def simulate_scrape(product: str, target: dict) -> ExtractionResult:
-    """Deterministic-ish mock scraper for MVP. Returns realistic-looking data."""
-    # Weighted outcome: 55% in-stock, 35% out, 10% error
-    r = random.random()
-    if r < 0.55:
-        status = "IN_STOCK"
-    elif r < 0.90:
-        status = "OUT_OF_STOCK"
-    else:
-        status = "ERROR"
-
-    price = None
-    mrp = None
-    stock = 0
-    pack = None
-    if status == "IN_STOCK":
-        p = round(random.uniform(20.0, 120.0), 2)
-        price = f"{p:.2f}"
-        mrp = f"{round(p * 1.15, 2):.2f}"
-        stock = random.randint(10, 210)
-        pack = random.choice(["10x10", "1x10", "1x15", "1x30", "10x15"])
-
-    return ExtractionResult(
-        targetId=target["id"],
-        targetName=target["name"],
-        portal=target["portal"],
-        url=target["url"],
-        product=product,
-        status=status,
-        price=price,
-        mrp=mrp,
-        stock=stock,
-        pack=pack,
-        responseMs=random.randint(200, 1100),
-    )
-
-
-# ---------------------------- Portals ----------------------------
+# ============================================================
+# PORTALS
+# ============================================================
 @api_router.get("/portals", response_model=List[Portal])
 async def list_portals():
     docs = await db.portals.find().to_list(1000)
-    return [Portal(**strip_mongo_id(d)) for d in docs]
+    return [Portal(**strip_mongo(d)) for d in docs]
 
 
 @api_router.post("/portals", response_model=Portal)
 async def create_portal(payload: PortalCreate):
-    portal = Portal(**payload.dict())
-    await db.portals.insert_one(portal.dict())
-    return portal
+    p = Portal(**payload.dict())
+    await db.portals.insert_one(p.dict())
+    return p
 
 
-# ---------------------------- Targets ----------------------------
-@api_router.get("/targets", response_model=List[Target])
-async def list_targets():
+# ============================================================
+# DISTRIBUTORS (stored in `targets` collection for backwards compat)
+# ============================================================
+@api_router.get("/targets", response_model=List[Distributor])
+async def list_distributors():
     docs = await db.targets.find().sort("created_at", 1).to_list(1000)
-    return [Target(**strip_mongo_id(d)) for d in docs]
+    out = []
+    for d in docs:
+        d = strip_mongo(d)
+        d.setdefault("portalType", infer_portal_type(d.get("portal", "")))
+        d.setdefault("hasCredentials", False)
+        out.append(Distributor(**d))
+    return out
 
 
-@api_router.post("/targets", response_model=Target)
-async def create_target(payload: TargetCreate):
-    target = Target(**payload.dict())
-    await db.targets.insert_one(target.dict())
-    return target
+@api_router.post("/targets", response_model=Distributor)
+async def create_distributor(payload: DistributorCreate):
+    data = payload.dict()
+    pwd = data.pop("password", None)
+    portal_type = data.get("portalType") or infer_portal_type(data.get("portal", ""))
+    dist = Distributor(**{
+        "name": data["name"],
+        "url": data["url"],
+        "portal": data["portal"],
+        "portalType": portal_type,
+        "username": data.get("username"),
+        "selected": data.get("selected", True),
+        "hasCredentials": bool(pwd),
+    })
+    to_store = dist.dict()
+    if pwd:
+        to_store["encryptedPassword"] = encrypt_secret(pwd)
+    await db.targets.insert_one(to_store)
+    return dist
 
 
-@api_router.patch("/targets/{target_id}", response_model=Target)
-async def update_target(target_id: str, payload: TargetUpdate):
-    updates = {k: v for k, v in payload.dict().items() if v is not None}
-    if not updates:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    result = await db.targets.find_one_and_update(
-        {"id": target_id},
-        {"$set": updates},
-        return_document=True,
-    )
-    if not result:
-        raise HTTPException(status_code=404, detail="Target not found")
-    return Target(**strip_mongo_id(result))
+@api_router.patch("/targets/{tid}", response_model=Distributor)
+async def update_distributor(tid: str, payload: DistributorUpdate):
+    raw = {k: v for k, v in payload.dict().items() if v is not None}
+    if not raw:
+        raise HTTPException(400, "No fields to update")
+    updates: Dict[str, Any] = {}
+    for k, v in raw.items():
+        if k == "password":
+            updates["encryptedPassword"] = encrypt_secret(v)
+            updates["hasCredentials"] = True
+        else:
+            updates[k] = v
+    # Re-derive portalType if portal changed but portalType not provided
+    if "portal" in updates and "portalType" not in updates:
+        updates["portalType"] = infer_portal_type(updates["portal"])
+    doc = await db.targets.find_one_and_update({"id": tid}, {"$set": updates}, return_document=True)
+    if not doc:
+        raise HTTPException(404, "Distributor not found")
+    doc = strip_mongo(doc)
+    doc.setdefault("portalType", infer_portal_type(doc.get("portal", "")))
+    doc.setdefault("hasCredentials", False)
+    return Distributor(**doc)
 
 
-@api_router.delete("/targets/{target_id}")
-async def delete_target(target_id: str):
-    res = await db.targets.delete_one({"id": target_id})
+@api_router.delete("/targets/{tid}")
+async def delete_distributor(tid: str):
+    res = await db.targets.delete_one({"id": tid})
     if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Target not found")
-    return {"ok": True, "id": target_id}
+        raise HTTPException(404, "Distributor not found")
+    return {"ok": True, "id": tid}
 
 
 @api_router.post("/targets/bulk-select")
@@ -243,81 +278,239 @@ async def bulk_select(payload: BulkSelect):
     return {"ok": True, "matched": res.matched_count, "modified": res.modified_count}
 
 
-# ---------------------------- Extraction ----------------------------
-@api_router.post("/extract", response_model=HistoryEntry)
+# ============================================================
+# TEST LOGIN
+# ============================================================
+@api_router.post("/targets/{tid}/test-login", response_model=TestLoginResponse)
+async def test_login(tid: str):
+    doc = await db.targets.find_one({"id": tid})
+    if not doc:
+        raise HTTPException(404, "Distributor not found")
+    if not doc.get("encryptedPassword") or not doc.get("username"):
+        return TestLoginResponse(ok=False, detail="Credentials not set for this distributor")
+
+    username = doc["username"]
+    try:
+        password = decrypt_secret(doc["encryptedPassword"])
+    except Exception as e:
+        return TestLoginResponse(ok=False, detail=f"Password decrypt failed: {e}")
+
+    url = doc["url"]
+    portal_type = doc.get("portalType") or infer_portal_type(doc.get("portal", ""))
+
+    filename = f"testlogin_{tid}_{uuid.uuid4().hex[:8]}.png"
+    async def _shot(page, tag):
+        p = SCREENSHOTS_DIR / f"testlogin_{tid}_{tag}_{uuid.uuid4().hex[:6]}.png"
+        try:
+            await page.screenshot(path=str(p), full_page=False)
+            return p.name
+        except Exception:
+            return None
+
+    browser = None
+    try:
+        browser = await _get_browser()
+        ctx = await browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            ignore_https_errors=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-IN",
+            extra_http_headers={
+                "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+        page = await ctx.new_page()
+        adapter = get_adapter(portal_type)
+        adapter.screenshotter = _shot
+        ok, detail = await adapter.test_login(page, url, username, password)
+        shot = await _shot(page, "final")
+        await ctx.close()
+        return TestLoginResponse(ok=ok, detail=detail, screenshot=shot)
+    except Exception as e:
+        return TestLoginResponse(ok=False, detail=f"{e.__class__.__name__}: {e}")
+    finally:
+        if browser:
+            try: await browser.close()
+            except Exception: pass
+
+
+# ============================================================
+# EXTRACTION (REAL — Playwright + adapters)
+# ============================================================
+@api_router.post("/extract")
 async def run_extraction(payload: ExtractRequest):
     if not payload.product.strip():
-        raise HTTPException(status_code=400, detail="Product name is required")
+        raise HTTPException(400, "Product name is required")
     if not payload.target_ids:
-        raise HTTPException(status_code=400, detail="At least one target is required")
+        raise HTTPException(400, "At least one distributor is required")
 
     docs = await db.targets.find({"id": {"$in": payload.target_ids}}).to_list(1000)
     if not docs:
-        raise HTTPException(status_code=404, detail="No matching targets found")
+        raise HTTPException(404, "No matching distributors")
 
-    start = datetime.utcnow()
-    results: List[ExtractionResult] = []
-    for d in docs:
-        # Simulate network latency (very short so backend testing is fast)
-        await asyncio.sleep(random.uniform(0.02, 0.10))
-        results.append(simulate_scrape(payload.product.upper(), d))
-    elapsed = (datetime.utcnow() - start).total_seconds()
+    entry_id = str(uuid.uuid4())
+    product_upper = payload.product.upper().strip()
+    qty = payload.quantity
 
-    found = sum(1 for r in results if r.status == "IN_STOCK")
-    oos = sum(1 for r in results if r.status == "OUT_OF_STOCK")
-    errs = sum(1 for r in results if r.status == "ERROR")
+    start_ts = datetime.utcnow()
+    results: List[Dict[str, Any]] = []
 
-    entry = HistoryEntry(
-        product=payload.product.upper(),
-        duration=f"{elapsed:.1f}s",
-        targetsRun=len(results),
-        found=found,
-        outOfStock=oos,
-        errors=errs,
-        status="PARTIAL" if errs > 0 else "COMPLETED",
-        results=results,
-    )
-    await db.history.insert_one(entry.dict())
+    browser = None
+    try:
+        browser = await _get_browser()
+
+        async def run_one(doc):
+            tid = doc["id"]
+            name = doc["name"]
+            portal = doc.get("portal", "")
+            portal_type = doc.get("portalType") or infer_portal_type(portal)
+            url = doc["url"]
+
+            base = {
+                "targetId": tid,
+                "targetName": name,
+                "portal": portal,
+                "portalType": portal_type,
+                "url": url,
+                "product": product_upper,
+            }
+
+            if not doc.get("username") or not doc.get("encryptedPassword"):
+                return {**base, **{"status": "LOGIN_FAILED", "detail": "Credentials not set. Edit distributor to add username/password.", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
+
+            try:
+                password = decrypt_secret(doc["encryptedPassword"])
+            except Exception as e:
+                return {**base, **{"status": "ERROR", "detail": f"Password decrypt failed: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
+
+            async def _shot(page, tag):
+                p = SCREENSHOTS_DIR / f"{entry_id}_{tid}_{tag}_{uuid.uuid4().hex[:6]}.png"
+                try:
+                    await page.screenshot(path=str(p), full_page=False)
+                    return p.name
+                except Exception:
+                    return None
+
+            ctx = None
+            try:
+                ctx = await browser.new_context(
+                    viewport={"width": 1366, "height": 900},
+                    ignore_https_errors=True,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    locale="en-IN",
+                    extra_http_headers={
+                        "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                        "Upgrade-Insecure-Requests": "1",
+                    },
+                )
+                page = await ctx.new_page()
+                adapter = get_adapter(portal_type)
+                adapter.screenshotter = _shot
+                outcome = await adapter.extract(page, url, doc["username"], password, product_upper, qty or 0)
+                return {**base, **outcome.to_dict()}
+            except Exception as e:
+                return {**base, **{"status": "ERROR", "detail": f"{e.__class__.__name__}: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
+            finally:
+                if ctx:
+                    try: await ctx.close()
+                    except Exception: pass
+
+        # Run all distributors in parallel (limit concurrency to 4)
+        sem = asyncio.Semaphore(4)
+        async def _guarded(d):
+            async with sem:
+                return await run_one(d)
+
+        results = await asyncio.gather(*[_guarded(d) for d in docs])
+    finally:
+        if browser:
+            try: await browser.close()
+            except Exception: pass
+
+    elapsed = (datetime.utcnow() - start_ts).total_seconds()
+    success = sum(1 for r in results if r["status"] == "SUCCESS")
+    not_found = sum(1 for r in results if r["status"] == "NOT_FOUND")
+    login_failed = sum(1 for r in results if r["status"] == "LOGIN_FAILED")
+    errors = sum(1 for r in results if r["status"] == "ERROR")
+
+    entry = {
+        "id": entry_id,
+        "product": product_upper,
+        "quantity": qty,
+        "timestamp": start_ts,
+        "duration": f"{elapsed:.1f}s",
+        "targetsRun": len(results),
+        "found": success,
+        "notFound": not_found,
+        "loginFailed": login_failed,
+        "errors": errors,
+        "outOfStock": not_found,  # legacy alias
+        "status": "COMPLETED" if errors == 0 and login_failed == 0 else "PARTIAL",
+        "results": results,
+    }
+    await db.history.insert_one(entry)
+    entry.pop("_id", None)
     return entry
 
 
-# ---------------------------- History ----------------------------
-@api_router.get("/history", response_model=List[HistoryEntry])
+# ============================================================
+# HISTORY
+# ============================================================
+@api_router.get("/history")
 async def list_history():
     docs = await db.history.find().sort("timestamp", -1).to_list(1000)
     out = []
     for d in docs:
-        d = strip_mongo_id(d)
-        # Older seeded docs may not have `results` — normalize
+        d = strip_mongo(d)
         d.setdefault("results", [])
         d.setdefault("errors", 0)
-        out.append(HistoryEntry(**d))
+        d.setdefault("quantity", None)
+        out.append(d)
     return out
 
 
-@api_router.get("/history/{entry_id}", response_model=HistoryEntry)
+@api_router.get("/history/{entry_id}")
 async def get_history(entry_id: str):
     doc = await db.history.find_one({"id": entry_id})
     if not doc:
-        raise HTTPException(status_code=404, detail="History entry not found")
-    doc = strip_mongo_id(doc)
+        raise HTTPException(404, "Not found")
+    doc = strip_mongo(doc)
     doc.setdefault("results", [])
     doc.setdefault("errors", 0)
-    return HistoryEntry(**doc)
+    doc.setdefault("quantity", None)
+    return doc
 
 
 @api_router.delete("/history/{entry_id}")
 async def delete_history(entry_id: str):
     res = await db.history.delete_one({"id": entry_id})
     if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="History entry not found")
+        raise HTTPException(404, "Not found")
     return {"ok": True, "id": entry_id}
 
 
-# ---------------------------- Root ----------------------------
+# ============================================================
+# SCREENSHOTS
+# ============================================================
+@api_router.get("/screenshots/{filename}")
+async def get_screenshot(filename: str):
+    # Prevent path traversal
+    fn = os.path.basename(filename)
+    p = SCREENSHOTS_DIR / fn
+    if not p.exists():
+        raise HTTPException(404, "Screenshot not found")
+    return FileResponse(str(p), media_type="image/png")
+
+
+# ============================================================
+# ROOT
+# ============================================================
 @api_router.get("/")
 async def root():
-    return {"service": "pharmascrape", "status": "ok"}
+    return {"service": "pharmascrape", "status": "ok", "version": "2.0"}
 
 
 app.include_router(api_router)
@@ -330,21 +523,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 
 @app.on_event("startup")
 async def on_startup():
     try:
+        # Migrate: reset seed if legacy targets have no portalType and no credentials
+        legacy = await db.targets.count_documents({"portalType": {"$exists": False}})
+        if legacy > 0:
+            await db.targets.update_many(
+                {"portalType": {"$exists": False}},
+                {"$set": {"portalType": "GENERIC", "hasCredentials": False}}
+            )
+            logger.info(f"Backfilled portalType on {legacy} legacy distributor(s)")
         await seed_if_empty()
+        asyncio.create_task(_cleanup_old_screenshots())
     except Exception as e:
-        logger.error(f"Seed error: {e}")
+        logger.error(f"Startup error: {e}")
 
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+async def on_shutdown():
+    global _playwright
+    try:
+        client.close()
+    except Exception:
+        pass
+    if _playwright is not None:
+        try:
+            await _playwright.stop()
+        except Exception:
+            pass

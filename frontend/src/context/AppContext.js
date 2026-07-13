@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { TargetsAPI, HistoryAPI, ExtractAPI } from '../lib/api';
+import { DistributorsAPI, HistoryAPI, ExtractAPI } from '../lib/api';
 
 const AppContext = createContext(null);
 
@@ -11,14 +11,15 @@ export const useApp = () => {
 
 export const AppProvider = ({ children }) => {
   const [product, setProduct] = useState('prolomet xl 25');
-  const [targets, setTargets] = useState([]);
+  const [quantity, setQuantity] = useState('10');
+  const [distributors, setDistributors] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const refreshTargets = useCallback(async () => {
-    const data = await TargetsAPI.list();
-    setTargets(data);
+  const refreshDistributors = useCallback(async () => {
+    const data = await DistributorsAPI.list();
+    setDistributors(data);
   }, []);
 
   const refreshHistory = useCallback(async () => {
@@ -30,7 +31,7 @@ export const AppProvider = ({ children }) => {
     (async () => {
       try {
         setLoading(true);
-        await Promise.all([refreshTargets(), refreshHistory()]);
+        await Promise.all([refreshDistributors(), refreshHistory()]);
       } catch (e) {
         console.error(e);
         setError('Failed to load data');
@@ -38,53 +39,55 @@ export const AppProvider = ({ children }) => {
         setLoading(false);
       }
     })();
-  }, [refreshTargets, refreshHistory]);
+  }, [refreshDistributors, refreshHistory]);
 
-  const toggleTarget = async (id) => {
-    const target = targets.find((t) => t.id === id);
-    if (!target) return;
-    // Optimistic update
-    setTargets((prev) => prev.map((t) => (t.id === id ? { ...t, selected: !t.selected } : t)));
-    try {
-      await TargetsAPI.update(id, { selected: !target.selected });
-    } catch (e) {
-      // Revert on error
-      setTargets((prev) => prev.map((t) => (t.id === id ? { ...t, selected: target.selected } : t)));
-    }
+  const toggleDistributor = async (id) => {
+    const d = distributors.find((t) => t.id === id);
+    if (!d) return;
+    setDistributors((prev) => prev.map((t) => (t.id === id ? { ...t, selected: !t.selected } : t)));
+    try { await DistributorsAPI.update(id, { selected: !d.selected }); }
+    catch (e) { setDistributors((prev) => prev.map((t) => (t.id === id ? { ...t, selected: d.selected } : t))); }
   };
 
-  const setAllTargets = async (selected) => {
-    setTargets((prev) => prev.map((t) => ({ ...t, selected })));
-    try { await TargetsAPI.bulkSelect(selected); } catch (e) { console.error(e); }
+  const setAllSelected = async (selected) => {
+    setDistributors((prev) => prev.map((t) => ({ ...t, selected })));
+    try { await DistributorsAPI.bulkSelect(selected); } catch (e) { console.error(e); }
   };
 
-  const addTarget = async (t) => {
-    const created = await TargetsAPI.create(t);
-    setTargets((prev) => [...prev, created]);
+  const addDistributor = async (t) => {
+    const created = await DistributorsAPI.create(t);
+    setDistributors((prev) => [...prev, created]);
     return created;
   };
 
-  const removeTarget = async (id) => {
-    setTargets((prev) => prev.filter((t) => t.id !== id));
-    try { await TargetsAPI.remove(id); } catch (e) { console.error(e); }
+  const updateDistributor = async (id, patch) => {
+    const updated = await DistributorsAPI.update(id, patch);
+    setDistributors((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    return updated;
+  };
+
+  const removeDistributor = async (id) => {
+    setDistributors((prev) => prev.filter((t) => t.id !== id));
+    try { await DistributorsAPI.remove(id); } catch (e) { console.error(e); }
   };
 
   const runExtraction = async () => {
-    const active = targets.filter((t) => t.selected).map((t) => t.id);
-    const entry = await ExtractAPI.run(product, active);
+    const ids = distributors.filter((t) => t.selected).map((t) => t.id);
+    const entry = await ExtractAPI.run(product, quantity, ids);
     setHistory((prev) => [entry, ...prev]);
     return entry;
   };
 
-  const getHistoryDetail = async (id) => {
-    return HistoryAPI.get(id);
-  };
+  const getHistoryDetail = async (id) => HistoryAPI.get(id);
 
   return (
     <AppContext.Provider
       value={{
         product, setProduct,
-        targets, toggleTarget, setAllTargets, addTarget, removeTarget,
+        quantity, setQuantity,
+        distributors,
+        toggleDistributor, setAllSelected,
+        addDistributor, updateDistributor, removeDistributor,
         history, runExtraction, getHistoryDetail,
         loading, error,
       }}
