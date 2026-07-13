@@ -67,9 +67,6 @@ const SearchPage = () => {
                     </span>
                   )}
                 </div>
-                <div className="mt-1 text-[12px] text-neutral-500 truncate">
-                  <span className="font-mono">{t.url}</span>
-                </div>
               </div>
 
               <span className="shrink-0 text-[10px] mono-track-wide font-semibold border border-emerald-600 rounded-sm px-2.5 py-1.5 text-neutral-950 bg-white">{t.portal}</span>
