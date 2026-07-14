@@ -59,8 +59,33 @@ const ExtractionModal = ({ open, onOpenChange }) => {
 
   const copyJson = () => {
     if (!entry) return;
-    navigator.clipboard.writeText(JSON.stringify(entry, null, 2));
-    toast('JSON copied');
+    const text = JSON.stringify(entry, null, 2);
+    // Try modern clipboard API first; fall back to legacy textarea for iframes
+    // where the Clipboard API is blocked by permissions policy.
+    const legacyCopy = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast('JSON copied');
+      } catch (e) {
+        toast.error('Copy blocked — long-press to select the JSON');
+      }
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text)
+        .then(() => toast('JSON copied'))
+        .catch(() => legacyCopy());
+    } else {
+      legacyCopy();
+    }
   };
 
   return (
