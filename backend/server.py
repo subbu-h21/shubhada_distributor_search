@@ -17,7 +17,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env', override=True)
 
 # Configure Playwright browsers path BEFORE importing playwright
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers"))
@@ -28,6 +28,7 @@ from adapters import get_adapter
 
 # Playwright is imported lazily inside extraction to keep app startup snappy
 _playwright = None
+_browser_install_lock = asyncio.Lock()
 
 
 # --- Screenshot directory ---
@@ -158,43 +159,48 @@ def infer_portal_type(portal: str) -> str:
 
 async def _get_browser():
     """Launch a shared Playwright browser instance. Auto-recovers if the
-    Chromium executable was wiped between sessions by falling back to the
-    system-installed Chromium at /usr/bin/chromium."""
+    Chromium executable was wiped between sessions. Uses a persistent
+    PLAYWRIGHT_BROWSERS_PATH (see .env) so browsers survive across
+    ephemeral container resets."""
     global _playwright
+    import sys
     from playwright.async_api import async_playwright
     if _playwright is None:
         _playwright = await async_playwright().start()
 
     launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
 
-    # 1) Try Playwright's bundled chromium first
-    try:
+    async with _browser_install_lock:
+        # 1) Try Playwright's bundled chromium first
+        try:
+            return await _playwright.chromium.launch(headless=True, args=launch_args)
+        except Exception as e:
+            err = str(e)
+            logger.warning(f"Bundled chromium launch failed: {err[:200]}")
+
+        # 2) Try system chromium (persists across environment resets)
+        for candidate in ("/root/chromium-persistent/chromium", "/usr/bin/chromium", "/root/bin/chromium"):
+            if os.path.exists(candidate):
+                try:
+                    logger.info(f"Falling back to system chromium at {candidate}")
+                    return await _playwright.chromium.launch(
+                        headless=True,
+                        executable_path=candidate,
+                        args=launch_args,
+                    )
+                except Exception as e2:
+                    logger.warning(f"System chromium at {candidate} failed: {str(e2)[:200]}")
+
+        # 3) Last resort — install playwright chromium on the fly using
+        # the current python interpreter (so PATH issues don't matter).
+        logger.warning("All chromium candidates failed — running `python -m playwright install chromium`...")
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "playwright", "install", "chromium",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        logger.info(f"playwright install exit={proc.returncode} stdout={(stdout or b'')[:200]!r} stderr={(stderr or b'')[:200]!r}")
         return await _playwright.chromium.launch(headless=True, args=launch_args)
-    except Exception as e:
-        err = str(e)
-        logger.warning(f"Bundled chromium launch failed: {err[:200]}")
-
-    # 2) Try system chromium (persists across environment resets)
-    for candidate in ("/root/chromium-persistent/chromium", "/usr/bin/chromium", "/root/bin/chromium"):
-        if os.path.exists(candidate):
-            try:
-                logger.info(f"Falling back to system chromium at {candidate}")
-                return await _playwright.chromium.launch(
-                    headless=True,
-                    executable_path=candidate,
-                    args=launch_args,
-                )
-            except Exception as e2:
-                logger.warning(f"System chromium at {candidate} failed: {str(e2)[:200]}")
-
-    # 3) Last resort — install playwright chromium on the fly
-    logger.warning("All chromium candidates failed — running `playwright install chromium`...")
-    proc = await asyncio.create_subprocess_exec(
-        "playwright", "install", "chromium",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()
-    return await _playwright.chromium.launch(headless=True, args=launch_args)
 
 
 async def _cleanup_old_screenshots():

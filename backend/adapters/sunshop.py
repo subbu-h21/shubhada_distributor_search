@@ -468,75 +468,103 @@ class SunshopAdapter(BaseAdapter):
         # Collect every visible autocomplete suggestion
         candidates = await _collect_candidates()
 
-        def _normalize(s: str) -> str:
-            # Lowercase and collapse all non-alphanumerics into a single space
-            return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+        # ---------- Fuzzy-match normalization ----------
+        # Product name variations across distributors:
+        #   "prolomet xl 25", "prolomet-xl-25", "prolomet.xl.25",
+        #   "prolomet xl 25 15s", "prolomet xl 25tabs", "prolomet xl 25mg tab"
+        # ...should all be treated as the SAME product.
+        #
+        # Rules:
+        #  1. Lowercase; replace any non-alphanumeric with space.
+        #  2. Split into raw tokens.
+        #  3. Strip trailing units from mixed tokens: 25mg→25, 100ml→100, 25tabs→25
+        #  4. Drop pack tokens (standalone \d+s like 10s, 15s, 20s).
+        #  5. Drop pure unit words (mg, ml, tab, cap, tablet, capsule, etc).
+        #  6. KEEP alphabetic modifiers (xl, sr, xr, dt, am, plus, beta, etc.) —
+        #     they are part of the product identity.
+        # A canonical prefix match then means: the user's query matches the SKU
+        # ignoring distributor-specific pack/unit noise, but any different
+        # STRENGTH number (25 vs 50) still fails the match — as it should.
 
-        target_norm = _normalize(product)
-        target_tokens = raw_tokens
+        UNIT_WORDS = {
+            "mg", "mcg", "ml", "iu", "g", "gm", "kg",
+            "tab", "tabs", "tablet", "tablets",
+            "cap", "caps", "capsule", "capsules",
+            "syp", "syrup", "susp", "suspension",
+            "drop", "drops", "ointment", "cream", "gel",
+            "inj", "injection", "sol", "solution", "lotion",
+            "sachet", "sachets", "powder", "spray", "lozenge", "lozenges",
+        }
+        UNIT_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)(mg|mcg|ml|iu|gm|g|tab|tabs|cap|caps|tablet|tablets|capsule|capsules)$")
+        PACK_RE = re.compile(r"^\d+s$")  # 10s, 15s, 20s, 100s
+
+        def _canon(text: str) -> list:
+            """Turn a product string into a list of canonical tokens
+            (see rules above)."""
+            raw = re.findall(r"[a-z0-9]+", (text or "").lower())
+            out = []
+            for tok in raw:
+                if tok in UNIT_WORDS:
+                    continue
+                if PACK_RE.match(tok):
+                    continue
+                m = UNIT_SUFFIX_RE.match(tok)
+                if m:
+                    # 25mg -> 25 ; 100ml -> 100 ; 25tabs -> 25
+                    out.append(m.group(1))
+                    continue
+                out.append(tok)
+            return out
+
+        query_canon = _canon(product)
+        raw_query_tokens = re.findall(r"[a-z0-9]+", product.lower())  # for logging only
 
         def _score(suggestion_text: str) -> int:
-            """Score a suggestion. Rules:
-            - Big bonus if suggestion starts with the exact query tokens as a prefix.
-            - Penalty if immediately after the prefix comes a purely-numeric token
-              (means extra dosage like TELMIKIND AM 80 when user typed TELMIKIND AM).
-            - Bonus if immediately after the prefix comes an alphanumeric pack token
-              (like 10S, 15S) — those are unavoidable in SUNSHOP product codes.
-            - Exact match (no extra tokens at all): huge bonus.
-            - Fallback: sub-token overlap.
+            """Score a suggestion using canonical tokens.
+            Rules:
+              +50  canonical exact match
+              +30  canonical query is a strict prefix of the candidate
+              -50  candidate has an extra numeric token right after the prefix
+                   (different dosage — reject)
+              < 0  candidate does NOT contain the query prefix — reject
             """
-            norm = _normalize(suggestion_text)
-            words = norm.split()
-            n = len(target_tokens)
+            cand = _canon(suggestion_text)
+            n = len(query_canon)
+            if n == 0 or len(cand) < n:
+                return -100
+            if cand[:n] != query_canon:
+                # Not a canonical prefix. As a very weak fallback, check whether
+                # every query token appears somewhere in the candidate — this
+                # handles portals that render suggestions out-of-order.
+                if all(t in cand for t in query_canon):
+                    return 5
+                return -100
+            extras = cand[n:]
+            if not extras:
+                return 50
+            nxt = extras[0]
+            if nxt.isdigit() or re.match(r"^\d+(?:\.\d+)?$", nxt):
+                # Different strength (25 vs 50) — reject decisively
+                return -50
+            # Alphabetic modifier remaining (e.g., BETA, PLUS, FORTE) means a
+            # sibling variant. Small penalty but not a hard reject — pack/unit
+            # tokens were already stripped, so this is usually a real variant.
+            return 30 - 5 * len(extras)
 
-            # Prefix match on the exact query tokens
-            if n and len(words) >= n and words[:n] == target_tokens:
-                score = 20 + n * 2
-                extra = words[n:]
-                if not extra:
-                    # Exactly matches the query — best possible
-                    score += 30
-                else:
-                    nxt = extra[0]
-                    if nxt.isdigit():
-                        # Purely numeric extra token = different dosage, big penalty
-                        score -= 12
-                    elif re.match(r"^\d+[a-z]+$", nxt) or re.match(r"^[a-z]+\d+$", nxt):
-                        # Pack info like 10s / 15s or a code
-                        score += 2
-                    else:
-                        # Other alphabetic modifier (BETA, PLUS, XR, etc.)
-                        # Also different variant, moderate penalty
-                        score -= 6
-                return score
-
-            # No prefix match: fall back to token overlap
-            score = 0
-            for t in target_tokens:
-                if t in words:
-                    score += 2
-                elif t in norm:
-                    score += 1
-            if target_norm and target_norm in norm:
-                score += 5
-            return score
-
-        best_el, best_score = None, -1
+        best_el, best_score = None, -1000
+        best_txt = None
         for el, txt in candidates:
             s = _score(txt)
             if s > best_score:
                 best_score = s
                 best_el = el
+                best_txt = txt
 
-        # If we found a scored suggestion, click it — but ONLY if it's a clean
-        # prefix match. Threshold 22 accepts: exact match (~54) or prefix + pack
-        # token like 10S/15S (~26). Rejects: dosage extras (~12) or modifiers
-        # like BETA/PLUS/XR (~18) or non-prefix substring matches (< 10).
-        # This ensures 'telmikind am' does not accidentally pick 'telmikind am 80'
-        # or 'telmikind am beta 50 tab' — the distributor simply gets NOT_FOUND
-        # if they don't stock the exact variant.
+        # Threshold 25: accepts canonical exact match (50) or clean canonical
+        # prefix + single alphabetic modifier (30-25). Rejects different
+        # strength dosages (-50) and unrelated suggestions.
         picked = False
-        if best_el and best_score >= 22:
+        if best_el and best_score >= 25:
             try:
                 await best_el.click()
                 picked = True
