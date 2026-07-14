@@ -52,12 +52,13 @@ with screenshots.
   - Added asyncio.Lock to serialize browser install retries.
   - Fixed Copy-JSON button — iframe blocks Clipboard API; now uses `document.execCommand('copy')` first.
   - Refactored matcher into `adapters/match.py` — special chars, unit words (mg/ml/tab/cap/tablet/…) and pack sizes (10s/15s) are stripped; strength numbers respected; alphabetic modifiers (xl/sr/xr/dt/am/plus/…) preserved.
-  - Word-by-word typing into portal autocompletes (SUNSHOP + CHETHANA + LIVECONNECT).
+  - Word-by-word typing into portal autocompletes.
   - **Built CHETHANA adapter** (`chiragpharma.in`). Extracts Code, Product, Pack, MRP.
   - **Built LIVECONNECT adapter** with OTP session manager. One search → 8 sellers with Stock/MRP/PTR/Scheme.
     - New API endpoints: `POST /api/liveconnect/session/begin`, `/verify`, `GET /session`, `DELETE /session`.
     - New UI: LIVECONNECT SESSION item in user-avatar dropdown.
   - Added `seller` and `manufacturer` fields to `ExtractedItem`; CSV + ResultCard show them.
+  - **Smart-prefix SUNSHOP search**: type first 4 chars → collect suggestions → canonical-score → click best. Progressive lengthening (4→5→6→…→full) and fallback to shorter (3, 2). Massive accuracy improvement — SAROJ, HEGDE now return SUCCESS where they returned NOT_FOUND. When genuinely not stocked, response lists the distributor's *nearest* SKUs.
 
 ## Pending / Next Tasks
 - 🔴 **P0** — VARDHAMAN Shimoga is IP-blocked from our overseas container. Options: (a) whitelist container IP with VARDHAMAN admin, (b) route through an Indian proxy, (c) skip.
