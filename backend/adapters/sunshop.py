@@ -413,15 +413,10 @@ class SunshopAdapter(BaseAdapter):
         except Exception:
             pass
 
-        # Type only the first token — broader autocomplete list
-        await search_el.type(first_token, delay=80)
-        # Give the autocomplete AJAX time
-        await page.wait_for_timeout(1400)
-
-        # Diagnostic screenshot of the suggestion list
-        await self._screenshot(page, "autocomplete-open")
-
-        # Collect every visible autocomplete suggestion
+        # Type the product WORD-BY-WORD (not a single paste) so the portal's
+        # AJAX autocomplete narrows down progressively — this is how a human
+        # types it and gives the most accurate match. After each token we
+        # wait briefly for the suggestion list to refresh.
         suggestion_selectors = [
             'ul.ui-autocomplete li:visible',
             'ul.ui-autocomplete .ui-menu-item:visible',
@@ -432,22 +427,46 @@ class SunshopAdapter(BaseAdapter):
             'ul.dropdown-menu:visible li a',
             'div[role="listbox"] div[role="option"]',
         ]
-        candidates = []
-        for sel in suggestion_selectors:
+
+        async def _collect_candidates():
+            found = []
+            for sel in suggestion_selectors:
+                try:
+                    els = await page.query_selector_all(sel)
+                    for e in els:
+                        try:
+                            if await e.is_visible():
+                                txt = ((await e.inner_text()) or "").strip()
+                                if txt:
+                                    found.append((e, txt))
+                        except Exception:
+                            continue
+                    if found:
+                        return found
+                except Exception:
+                    continue
+            return found
+
+        for idx, token in enumerate(raw_tokens):
+            if idx > 0:
+                # Space between words so the portal's search receives multi-word input
+                try:
+                    await search_el.type(" ", delay=60)
+                except Exception:
+                    pass
+            # Type each word char-by-char with a small delay — mimics a human
             try:
-                els = await page.query_selector_all(sel)
-                for e in els:
-                    try:
-                        if await e.is_visible():
-                            txt = ((await e.inner_text()) or "").strip()
-                            if txt:
-                                candidates.append((e, txt))
-                    except Exception:
-                        continue
-                if candidates:
-                    break
+                await search_el.type(token, delay=80)
             except Exception:
-                continue
+                break
+            # Wait for autocomplete AJAX between tokens
+            await page.wait_for_timeout(700 if idx < len(raw_tokens) - 1 else 1200)
+
+        # Diagnostic screenshot of the suggestion list
+        await self._screenshot(page, "autocomplete-open")
+
+        # Collect every visible autocomplete suggestion
+        candidates = await _collect_candidates()
 
         def _normalize(s: str) -> str:
             # Lowercase and collapse all non-alphanumerics into a single space
