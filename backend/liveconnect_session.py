@@ -131,7 +131,25 @@ class LiveconnectSessionManager:
         page = entry["page"]
         ctx = entry["ctx"]
         try:
-            await page.fill(OTP_INPUT, otp.strip())
+            # Use type() (dispatches input events) instead of fill() so the
+            # page's JS validation enables the Verify button.
+            try:
+                await page.click(OTP_INPUT)
+            except Exception:
+                pass
+            try:
+                await page.fill(OTP_INPUT, "")
+            except Exception:
+                pass
+            await page.type(OTP_INPUT, otp.strip(), delay=90)
+            # Wait for the button to become enabled (some sites disable it until N digits)
+            try:
+                await page.wait_for_function(
+                    "document.querySelector('#verifyotp') && !document.querySelector('#verifyotp').disabled",
+                    timeout=5000,
+                )
+            except Exception:
+                pass
             await page.click(VERIFY_BTN)
             # After verify, page should redirect to dashboard
             try:
