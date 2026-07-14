@@ -154,6 +154,8 @@ def infer_portal_type(portal: str) -> str:
     p = (portal or "").upper()
     if "SUNSHOP" in p:
         return "SUNSHOP"
+    if "CHETHANA" in p or "CHIRAG" in p:
+        return "CHETHANA"
     return "GENERIC"
 
 
