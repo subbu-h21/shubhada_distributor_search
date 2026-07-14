@@ -462,64 +462,131 @@ class SunshopAdapter(BaseAdapter):
             best = max(scored, key=lambda t: t[3])
             return best[0], best[3], scored, cands
 
-        # ---------- SMART TYPING STRATEGY ----------
-        # Instead of typing the full query and hoping the portal's search
-        # engine finds an exact match, we start with a short prefix (4-5 chars
-        # of the first token). Portal SKUs vary (spaces, dashes, mg suffixes),
-        # so a short prefix surfaces a *wide* list and we pick the right item
-        # ourselves using canonical scoring.
+        # ---------- MULTI-STAGE SMART SEARCH ----------
+        # We type in ESCALATING STAGES to observe the portal's autocomplete
+        # at multiple prefix lengths:
+        #   Stage 1: first 4 chars of first token  (e.g., "PROL")
+        #   Stage 2: full first token              (e.g., "PROLOMET")
+        #   Stage 3: full query up to modifier     (e.g., "PROLOMET XL")
+        #   Stage 4: complete query                (e.g., "PROLOMET XL 25")
         #
-        # If no acceptable match, incrementally lengthen the prefix. If STILL
-        # nothing, try shorter prefixes (some portals require min 3 chars).
+        # At every stage we:
+        #   1) Capture a screenshot of the dropdown
+        #   2) Collect every visible suggestion into a UNIQUE-NAME dict
+        #   3) Canonical-score each suggestion
+        #
+        # After ALL stages we pick the highest-scoring UNIQUE suggestion.
+        # Because we retype from scratch each stage, we still get a fresh AJAX
+        # response per stage. Because we accumulate candidates from ALL stages
+        # rather than stopping at the first match, we're far more robust to
+        # portals that (a) return partial lists at each length, or (b) surface
+        # a matching SKU only at a specific prefix depth.
         first_token = raw_tokens[0]
-        # Growth sequence: prefer 4 chars first, then longer, then shorter fallback.
-        base_len = 4 if len(first_token) >= 4 else len(first_token)
-        prefix_attempts = []
-        # First try 4 chars, then 5, then 6, ... up to the full first token
-        for L in range(base_len, min(len(first_token), 8) + 1):
-            prefix_attempts.append(first_token[:L])
-        # Fallback: shorter prefixes (3, 2)
-        for L in (3, 2):
-            if L < base_len:
-                prefix_attempts.append(first_token[:L])
-        # De-dupe while preserving order
-        seen = set()
-        prefix_attempts = [p for p in prefix_attempts if not (p in seen or seen.add(p))]
+        stages: List[str] = []
+        # Stage 1 — 4 chars of first token (or the whole first token if shorter)
+        stages.append(first_token[: min(4, len(first_token))])
+        # Stage 2 — full first token
+        if len(first_token) > 4:
+            stages.append(first_token)
+        # Stage 3 — first token + second token
+        if len(raw_tokens) >= 2:
+            stages.append(f"{first_token} {raw_tokens[1]}")
+        # Stage 4 — full query
+        if len(raw_tokens) >= 3:
+            stages.append(" ".join(raw_tokens))
+        # If the query has < 4 chars in the first token, fall back to shorter
+        if len(first_token) < 4:
+            stages = [first_token[:2], first_token[:3], first_token] + stages
+        # De-dupe preserving order
+        seen: set = set()
+        stages = [s for s in stages if not (s in seen or seen.add(s))]
 
-        best_el = None
-        best_score = -1000
-        all_candidate_names: List[str] = []
-        for attempt_idx, prefix in enumerate(prefix_attempts):
-            # Clear + retype (fresh AJAX each attempt)
+        # Candidate accumulator: unique_name -> {el, best_score, seen_at_stage}
+        pool: dict = {}
+        stage_screenshots: List[str] = []
+
+        for stage_idx, stage_text in enumerate(stages):
+            # Clear + retype from scratch for this stage
             try:
                 await search_el.click()
                 await search_el.fill("")
             except Exception:
                 pass
             try:
-                await search_el.type(prefix, delay=90)
+                await search_el.type(stage_text, delay=85)
             except Exception:
                 break
-            # AJAX debounce
-            await page.wait_for_timeout(1400)
-            el, sc, scored, cands = await _best_match()
-            if scored:
-                # Track all seen candidate names for diagnostics
-                for _, _, nm, _ in scored:
-                    if nm not in all_candidate_names:
-                        all_candidate_names.append(nm)
-            if el is not None and sc > best_score:
-                best_el, best_score = el, sc
-            # Good enough? stop iterating.
-            if best_score >= ACCEPT_THRESHOLD:
-                break
-            # If the portal produced no suggestions at all after 1400ms, try a
-            # longer prefix; if it produced *many* but none acceptable, still
-            # try a longer prefix to narrow.
+            # AJAX debounce — longer on first stage (portals often throttle)
+            await page.wait_for_timeout(1500 if stage_idx == 0 else 1200)
 
-        # Diagnostic screenshot after all attempts
+            # Screenshot this stage
+            tag = f"search-stage{stage_idx + 1}-{stage_text.replace(' ', '_')[:20]}"
+            shot = await self._screenshot(page, tag)
+            if shot:
+                stage_screenshots.append(shot)
+
+            # Collect candidates
+            cands = await _collect_candidates()
+            for el, txt in cands:
+                # Extract the pure name portion (strip codes / pack / price)
+                name = re.split(r"~|\||\t|\s{2,}|<", txt, maxsplit=1)[0].strip()
+                if not name:
+                    name = txt
+                s = score(query_canon, name)
+                if name in pool:
+                    # Keep the higher-scoring occurrence (element from that stage)
+                    if s > pool[name]["score"]:
+                        pool[name] = {"el": el, "score": s, "stage": stage_idx + 1}
+                else:
+                    pool[name] = {"el": el, "score": s, "stage": stage_idx + 1}
+
+            # Early-exit optimization: if we found a canonical exact match
+            # (score 50) at this stage, no point typing more — we have the best.
+            best_now = max((v["score"] for v in pool.values()), default=-1000)
+            if best_now >= 50:
+                # But do one more short screenshot so the user can see the
+                # final dropdown state for auditing
+                pass
+
+        # Pick the highest-scoring unique candidate across ALL stages
+        all_candidate_names: List[str] = list(pool.keys())
+        best_el = None
+        best_score = -1000
+        best_name = None
+        for name, meta in pool.items():
+            if meta["score"] > best_score:
+                best_score = meta["score"]
+                best_el = meta["el"]
+                best_name = name
+
+        # Sort candidate names by descending score for diagnostic display
+        sorted_names = sorted(pool.keys(), key=lambda n: -pool[n]["score"])
+        self._last_candidate_names = sorted_names[:30]
+        self._last_stage_screenshots = stage_screenshots
+
+        # For the best pick, ensure the search box currently reflects the stage
+        # where that candidate was found so the click works.
+        if best_el is not None and best_score >= ACCEPT_THRESHOLD:
+            picked_stage = pool[best_name]["stage"] - 1
+            if 0 <= picked_stage < len(stages) and stages[picked_stage] != stages[-1]:
+                # Retype the winning stage so the winning <li> is guaranteed visible
+                try:
+                    await search_el.click()
+                    await search_el.fill("")
+                    await search_el.type(stages[picked_stage], delay=85)
+                    await page.wait_for_timeout(1200)
+                except Exception:
+                    pass
+                # Rebuild best_el reference (DOM was re-rendered)
+                fresh = await _collect_candidates()
+                for el, txt in fresh:
+                    nm = re.split(r"~|\||\t|\s{2,}|<", txt, maxsplit=1)[0].strip() or txt
+                    if nm == best_name:
+                        best_el = el
+                        break
+
+        # Take a "before-click" diagnostic screenshot
         await self._screenshot(page, "autocomplete-open")
-        self._last_candidate_names = all_candidate_names[:30]
 
         # Threshold 25: accepts canonical exact match (50) or clean canonical
         # prefix + single alphabetic modifier (30-25). Rejects different
@@ -678,11 +745,14 @@ class SunshopAdapter(BaseAdapter):
             if not picked:
                 outcome.status = "NOT_FOUND"
                 cands = getattr(self, "_last_candidate_names", None) or []
+                stage_shots = getattr(self, "_last_stage_screenshots", None) or []
                 if cands:
                     outcome.detail = f"No exact-strength match. Distributor offered: {', '.join(cands[:6])}"
                     outcome.debug["candidates"] = cands
+                    outcome.debug["stageScreenshots"] = stage_shots
                 else:
                     outcome.detail = "No autocomplete suggestion appeared for that product name"
+                    outcome.debug["stageScreenshots"] = stage_shots
                 return outcome
 
             # 6. Read the populated Order Feed form (Stock, matched product name)
@@ -714,6 +784,8 @@ class SunshopAdapter(BaseAdapter):
                 if v is not None:
                     total_qty += v
             outcome.debug["totalAvailableQty"] = total_qty
+            outcome.debug["stageScreenshots"] = getattr(self, "_last_stage_screenshots", None) or []
+            outcome.debug["candidatesTried"] = getattr(self, "_last_candidate_names", None) or []
             outcome.can_fulfill = total_qty >= (quantity or 0) if quantity else None
             outcome.status = "SUCCESS"
             outcome.detail = f"Parsed {len(outcome.items)} row(s)"

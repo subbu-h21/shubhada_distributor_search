@@ -21,6 +21,7 @@ const ResultCard = ({ result, requestedQty }) => {
   const shots = [
     { tag: 'LOGIN', file: result.loginScreenshot },
     { tag: 'SEARCH', file: result.searchScreenshot },
+    ...(((result.debug || {}).stageScreenshots) || []).map((f, i) => ({ tag: `STAGE ${i + 1}`, file: f })),
     { tag: 'RESULTS', file: result.resultsScreenshot },
   ].filter((s) => !!s.file);
 

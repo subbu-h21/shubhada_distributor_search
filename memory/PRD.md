@@ -59,6 +59,7 @@ with screenshots.
     - New UI: LIVECONNECT SESSION item in user-avatar dropdown.
   - Added `seller` and `manufacturer` fields to `ExtractedItem`; CSV + ResultCard show them.
   - **Smart-prefix SUNSHOP search**: type first 4 chars → collect suggestions → canonical-score → click best. Progressive lengthening (4→5→6→…→full) and fallback to shorter (3, 2). Massive accuracy improvement — SAROJ, HEGDE now return SUCCESS where they returned NOT_FOUND. When genuinely not stocked, response lists the distributor's *nearest* SKUs.
+  - **Multi-stage screenshotting during search** (SUNSHOP): Types in escalating stages — `PROL` → `PROLOMET` → `PROLOMET XL` → `PROLOMET XL 25`. Captures a screenshot per stage AND accumulates candidates in a unique-name pool. After all stages, picks the highest-scoring unique suggestion across the union of all stages. UI shows all 4 stage screenshots so the pharmacist can audit exactly what the distributor's autocomplete offered at each typing depth.
   - **Combo-drug intelligence**: `X/Y`, `X-Y`, and `X Y` (two consecutive dosage numbers) are now canonicalized to a single `X/Y` token, and a query of `X` matches a candidate of `X/Y` as a combo variant (score 45). Handles:
     - `ECOSPRIN AV 75` ≡ `ECOSPRIN AV 75/10` ≡ `ECOSPRIN AV 75 10` ≡ `ECOSPRIN AV 75-10` ≡ `ECOSPRIN AV 75 CAPSULES` (all match). Different primary strength (`75` vs `150`) still fails.
     - `TELMIKIND AM 40` matches `TELMIKIND AM 40/5`, does NOT match `TELMIKIND AM 80`.
