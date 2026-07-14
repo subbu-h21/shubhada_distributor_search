@@ -401,7 +401,10 @@ class SunshopAdapter(BaseAdapter):
         raw_tokens = re.findall(r"[a-z0-9]+", product.lower())
         if not raw_tokens:
             return False
-        first_token = raw_tokens[0]
+
+        # Import shared matcher (canonicalize + score)
+        from .match import canon, score, ACCEPT_THRESHOLD
+        query_canon = canon(product)
 
         # Focus & clear
         try:
@@ -413,10 +416,6 @@ class SunshopAdapter(BaseAdapter):
         except Exception:
             pass
 
-        # Type the product WORD-BY-WORD (not a single paste) so the portal's
-        # AJAX autocomplete narrows down progressively — this is how a human
-        # types it and gives the most accurate match. After each token we
-        # wait briefly for the suggestion list to refresh.
         suggestion_selectors = [
             'ul.ui-autocomplete li:visible',
             'ul.ui-autocomplete .ui-menu-item:visible',
@@ -447,132 +446,93 @@ class SunshopAdapter(BaseAdapter):
                     continue
             return found
 
-        for idx, token in enumerate(raw_tokens):
-            if idx > 0:
-                # Space between words so the portal's search receives multi-word input
-                try:
-                    await search_el.type(" ", delay=60)
-                except Exception:
-                    pass
-            # Type each word char-by-char with a small delay — mimics a human
+        async def _best_match():
+            cands = await _collect_candidates()
+            if not cands:
+                return None, -1000, [], []
+            scored = []
+            for el, txt in cands:
+                # Distributor autocomplete rows sometimes contain
+                # "NAME <pack> <price>" or "NAME ~code ~pack ~price".
+                # Take the substring before the first ~ / | / long spaces.
+                name = re.split(r"~|\||\t|\s{2,}|<", txt, maxsplit=1)[0].strip()
+                if not name:
+                    name = txt
+                scored.append((el, txt, name, score(query_canon, name)))
+            best = max(scored, key=lambda t: t[3])
+            return best[0], best[3], scored, cands
+
+        # ---------- SMART TYPING STRATEGY ----------
+        # Instead of typing the full query and hoping the portal's search
+        # engine finds an exact match, we start with a short prefix (4-5 chars
+        # of the first token). Portal SKUs vary (spaces, dashes, mg suffixes),
+        # so a short prefix surfaces a *wide* list and we pick the right item
+        # ourselves using canonical scoring.
+        #
+        # If no acceptable match, incrementally lengthen the prefix. If STILL
+        # nothing, try shorter prefixes (some portals require min 3 chars).
+        first_token = raw_tokens[0]
+        # Growth sequence: prefer 4 chars first, then longer, then shorter fallback.
+        base_len = 4 if len(first_token) >= 4 else len(first_token)
+        prefix_attempts = []
+        # First try 4 chars, then 5, then 6, ... up to the full first token
+        for L in range(base_len, min(len(first_token), 8) + 1):
+            prefix_attempts.append(first_token[:L])
+        # Fallback: shorter prefixes (3, 2)
+        for L in (3, 2):
+            if L < base_len:
+                prefix_attempts.append(first_token[:L])
+        # De-dupe while preserving order
+        seen = set()
+        prefix_attempts = [p for p in prefix_attempts if not (p in seen or seen.add(p))]
+
+        best_el = None
+        best_score = -1000
+        all_candidate_names: List[str] = []
+        for attempt_idx, prefix in enumerate(prefix_attempts):
+            # Clear + retype (fresh AJAX each attempt)
             try:
-                await search_el.type(token, delay=80)
+                await search_el.click()
+                await search_el.fill("")
+            except Exception:
+                pass
+            try:
+                await search_el.type(prefix, delay=90)
             except Exception:
                 break
-            # Wait for autocomplete AJAX between tokens
-            await page.wait_for_timeout(700 if idx < len(raw_tokens) - 1 else 1200)
+            # AJAX debounce
+            await page.wait_for_timeout(1400)
+            el, sc, scored, cands = await _best_match()
+            if scored:
+                # Track all seen candidate names for diagnostics
+                for _, _, nm, _ in scored:
+                    if nm not in all_candidate_names:
+                        all_candidate_names.append(nm)
+            if el is not None and sc > best_score:
+                best_el, best_score = el, sc
+            # Good enough? stop iterating.
+            if best_score >= ACCEPT_THRESHOLD:
+                break
+            # If the portal produced no suggestions at all after 1400ms, try a
+            # longer prefix; if it produced *many* but none acceptable, still
+            # try a longer prefix to narrow.
 
-        # Diagnostic screenshot of the suggestion list
+        # Diagnostic screenshot after all attempts
         await self._screenshot(page, "autocomplete-open")
-
-        # Collect every visible autocomplete suggestion
-        candidates = await _collect_candidates()
-
-        # ---------- Fuzzy-match normalization ----------
-        # Product name variations across distributors:
-        #   "prolomet xl 25", "prolomet-xl-25", "prolomet.xl.25",
-        #   "prolomet xl 25 15s", "prolomet xl 25tabs", "prolomet xl 25mg tab"
-        # ...should all be treated as the SAME product.
-        #
-        # Rules:
-        #  1. Lowercase; replace any non-alphanumeric with space.
-        #  2. Split into raw tokens.
-        #  3. Strip trailing units from mixed tokens: 25mg→25, 100ml→100, 25tabs→25
-        #  4. Drop pack tokens (standalone \d+s like 10s, 15s, 20s).
-        #  5. Drop pure unit words (mg, ml, tab, cap, tablet, capsule, etc).
-        #  6. KEEP alphabetic modifiers (xl, sr, xr, dt, am, plus, beta, etc.) —
-        #     they are part of the product identity.
-        # A canonical prefix match then means: the user's query matches the SKU
-        # ignoring distributor-specific pack/unit noise, but any different
-        # STRENGTH number (25 vs 50) still fails the match — as it should.
-
-        UNIT_WORDS = {
-            "mg", "mcg", "ml", "iu", "g", "gm", "kg",
-            "tab", "tabs", "tablet", "tablets",
-            "cap", "caps", "capsule", "capsules",
-            "syp", "syrup", "susp", "suspension",
-            "drop", "drops", "ointment", "cream", "gel",
-            "inj", "injection", "sol", "solution", "lotion",
-            "sachet", "sachets", "powder", "spray", "lozenge", "lozenges",
-        }
-        UNIT_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)(mg|mcg|ml|iu|gm|g|tab|tabs|cap|caps|tablet|tablets|capsule|capsules)$")
-        PACK_RE = re.compile(r"^\d+s$")  # 10s, 15s, 20s, 100s
-
-        def _canon(text: str) -> list:
-            """Turn a product string into a list of canonical tokens
-            (see rules above)."""
-            raw = re.findall(r"[a-z0-9]+", (text or "").lower())
-            out = []
-            for tok in raw:
-                if tok in UNIT_WORDS:
-                    continue
-                if PACK_RE.match(tok):
-                    continue
-                m = UNIT_SUFFIX_RE.match(tok)
-                if m:
-                    # 25mg -> 25 ; 100ml -> 100 ; 25tabs -> 25
-                    out.append(m.group(1))
-                    continue
-                out.append(tok)
-            return out
-
-        query_canon = _canon(product)
-        raw_query_tokens = re.findall(r"[a-z0-9]+", product.lower())  # for logging only
-
-        def _score(suggestion_text: str) -> int:
-            """Score a suggestion using canonical tokens.
-            Rules:
-              +50  canonical exact match
-              +30  canonical query is a strict prefix of the candidate
-              -50  candidate has an extra numeric token right after the prefix
-                   (different dosage — reject)
-              < 0  candidate does NOT contain the query prefix — reject
-            """
-            cand = _canon(suggestion_text)
-            n = len(query_canon)
-            if n == 0 or len(cand) < n:
-                return -100
-            if cand[:n] != query_canon:
-                # Not a canonical prefix. As a very weak fallback, check whether
-                # every query token appears somewhere in the candidate — this
-                # handles portals that render suggestions out-of-order.
-                if all(t in cand for t in query_canon):
-                    return 5
-                return -100
-            extras = cand[n:]
-            if not extras:
-                return 50
-            nxt = extras[0]
-            if nxt.isdigit() or re.match(r"^\d+(?:\.\d+)?$", nxt):
-                # Different strength (25 vs 50) — reject decisively
-                return -50
-            # Alphabetic modifier remaining (e.g., BETA, PLUS, FORTE) means a
-            # sibling variant. Small penalty but not a hard reject — pack/unit
-            # tokens were already stripped, so this is usually a real variant.
-            return 30 - 5 * len(extras)
-
-        best_el, best_score = None, -1000
-        best_txt = None
-        for el, txt in candidates:
-            s = _score(txt)
-            if s > best_score:
-                best_score = s
-                best_el = el
-                best_txt = txt
+        self._last_candidate_names = all_candidate_names[:30]
 
         # Threshold 25: accepts canonical exact match (50) or clean canonical
         # prefix + single alphabetic modifier (30-25). Rejects different
         # strength dosages (-50) and unrelated suggestions.
         picked = False
-        if best_el and best_score >= 25:
+        if best_el and best_score >= ACCEPT_THRESHOLD:
             try:
                 await best_el.click()
                 picked = True
             except Exception:
                 pass
-        elif not candidates:
-            # No suggestions surfaced at all — try keyboard fallback for portals
-            # whose autocomplete renders inside iframes / shadow DOM.
+        elif best_score == -1000 and not all_candidate_names:
+            # Autocomplete never surfaced anything — try keyboard fallback
             try:
                 await page.keyboard.press("ArrowDown")
                 await page.wait_for_timeout(200)
@@ -580,9 +540,9 @@ class SunshopAdapter(BaseAdapter):
                 picked = True
             except Exception:
                 pass
-        # else: candidates exist but none was a clean-enough match — leave picked=False
-        # so the caller marks this distributor as NOT_FOUND (with the results
-        # screenshot showing what variants they actually stock).
+        # else: candidates exist but none was a clean-enough match — mark as
+        # NOT_FOUND. The `debug.candidates` field on the outcome tells the user
+        # what variants the distributor actually stocks.
 
         # Give the form time to populate Stock / other fields after selection
         await page.wait_for_timeout(1000)
@@ -717,7 +677,12 @@ class SunshopAdapter(BaseAdapter):
 
             if not picked:
                 outcome.status = "NOT_FOUND"
-                outcome.detail = "No autocomplete suggestion appeared for that product name"
+                cands = getattr(self, "_last_candidate_names", None) or []
+                if cands:
+                    outcome.detail = f"No exact-strength match. Distributor offered: {', '.join(cands[:6])}"
+                    outcome.debug["candidates"] = cands
+                else:
+                    outcome.detail = "No autocomplete suggestion appeared for that product name"
                 return outcome
 
             # 6. Read the populated Order Feed form (Stock, matched product name)
@@ -732,7 +697,12 @@ class SunshopAdapter(BaseAdapter):
 
             if not item or (not _stock_populated(item) and not item.mrp and not item.batch):
                 outcome.status = "NOT_FOUND"
-                outcome.detail = "Product typed but distributor's autocomplete returned no matching item (Stock empty)"
+                cands = getattr(self, "_last_candidate_names", None) or []
+                if cands:
+                    outcome.detail = f"Matched a variant but Stock is empty. Distributor stocks: {', '.join(cands[:6])}"
+                    outcome.debug["candidates"] = cands
+                else:
+                    outcome.detail = "Product typed but distributor's autocomplete returned no matching item (Stock empty)"
                 outcome.items = []
                 return outcome
 
