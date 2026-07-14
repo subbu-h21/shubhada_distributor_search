@@ -157,13 +157,26 @@ def infer_portal_type(portal: str) -> str:
 
 
 async def _get_browser():
-    """Launch a shared Playwright browser instance."""
+    """Launch a shared Playwright browser instance. Auto-recovers if the
+    Chromium executable was wiped between sessions."""
     global _playwright
     from playwright.async_api import async_playwright
     if _playwright is None:
         _playwright = await async_playwright().start()
-    browser = await _playwright.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-    return browser
+    try:
+        browser = await _playwright.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        return browser
+    except Exception as e:
+        # If the browser binary is missing, install it on the fly and retry once.
+        if "Executable doesn't exist" in str(e) or "browser was not installed" in str(e).lower():
+            logger.warning("Chromium missing — installing on the fly...")
+            proc = await asyncio.create_subprocess_exec(
+                "playwright", "install", "chromium",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            return await _playwright.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        raise
 
 
 async def _cleanup_old_screenshots():
