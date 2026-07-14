@@ -55,7 +55,11 @@ const ResultCard = ({ result, requestedQty }) => {
           <table className="w-full text-[11px] mono-track-tight">
             <thead>
               <tr className="text-left text-neutral-500">
+                {result.items.some((it) => it.seller) && (
+                  <th className="py-1.5 pr-3 font-medium">SELLER</th>
+                )}
                 <th className="py-1.5 pr-3 font-medium">MATCHED</th>
+                <th className="py-1.5 pr-3 font-medium">MFR</th>
                 <th className="py-1.5 pr-3 font-medium">PACK</th>
                 <th className="py-1.5 pr-3 font-medium">MRP</th>
                 <th className="py-1.5 pr-3 font-medium">PTR</th>
@@ -66,18 +70,26 @@ const ResultCard = ({ result, requestedQty }) => {
               </tr>
             </thead>
             <tbody>
-              {result.items.map((it, i) => (
-                <tr key={i} className="border-t border-neutral-200">
-                  <td className="py-1.5 pr-3 font-semibold uppercase">{it.matched_name || '—'}</td>
-                  <td className="py-1.5 pr-3">{it.pack || '—'}</td>
-                  <td className="py-1.5 pr-3 tabular-nums">{it.mrp || '—'}</td>
-                  <td className="py-1.5 pr-3 tabular-nums">{it.ptr || '—'}</td>
-                  <td className="py-1.5 pr-3 tabular-nums font-bold">{it.available_qty || '—'}</td>
-                  <td className="py-1.5 pr-3">{it.scheme || '—'}</td>
-                  <td className="py-1.5 pr-3">{it.batch || '—'}</td>
-                  <td className="py-1.5 pr-3">{it.expiry || '—'}</td>
-                </tr>
-              ))}
+              {result.items.map((it, i) => {
+                const qtyNum = it.available_qty && /^\d+$/.test(it.available_qty) ? parseInt(it.available_qty) : null;
+                const outOfStock = qtyNum === 0;
+                return (
+                  <tr key={i} className={`border-t border-neutral-200 ${outOfStock ? 'text-neutral-400' : ''}`}>
+                    {result.items.some((x) => x.seller) && (
+                      <td className="py-1.5 pr-3 font-semibold uppercase" data-testid={`result-seller-${i}`}>{it.seller || '—'}</td>
+                    )}
+                    <td className="py-1.5 pr-3 font-semibold uppercase">{it.matched_name || '—'}</td>
+                    <td className="py-1.5 pr-3">{it.manufacturer || '—'}</td>
+                    <td className="py-1.5 pr-3">{it.pack || '—'}</td>
+                    <td className="py-1.5 pr-3 tabular-nums">{it.mrp || '—'}</td>
+                    <td className="py-1.5 pr-3 tabular-nums">{it.ptr || '—'}</td>
+                    <td className={`py-1.5 pr-3 tabular-nums font-bold ${qtyNum > 0 ? 'text-emerald-700' : ''}`}>{it.available_qty || '—'}</td>
+                    <td className="py-1.5 pr-3">{it.scheme || '—'}</td>
+                    <td className="py-1.5 pr-3">{it.batch || '—'}</td>
+                    <td className="py-1.5 pr-3">{it.expiry || '—'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -24,6 +24,7 @@ class ExtractedItem:
     batch: Optional[str] = None
     expiry: Optional[str] = None
     manufacturer: Optional[str] = None
+    seller: Optional[str] = None            # For aggregators (LIVECONNECT): the seller/distributor name
     raw_row: Optional[List[str]] = None  # For debug: full row cells
 
 

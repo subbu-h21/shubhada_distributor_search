@@ -156,6 +156,8 @@ def infer_portal_type(portal: str) -> str:
         return "SUNSHOP"
     if "CHETHANA" in p or "CHIRAG" in p:
         return "CHETHANA"
+    if "LIVECONNECT" in p:
+        return "LIVECONNECT"
     return "GENERIC"
 
 
@@ -504,6 +506,15 @@ async def run_extraction(payload: ExtractRequest):
     results: List[Dict[str, Any]] = []
 
     browser = None
+    # Preload LIVECONNECT session cookies once (shared across all LIVECONNECT targets)
+    liveconnect_cookies = None
+    if any(d.get("portalType") == "LIVECONNECT" or infer_portal_type(d.get("portal", "")) == "LIVECONNECT" for d in docs):
+        try:
+            lc_doc = await db.liveconnect_session.find_one({"_id": "default"})
+            liveconnect_cookies = (lc_doc or {}).get("cookies")
+        except Exception:
+            liveconnect_cookies = None
+
     try:
         browser = await _get_browser()
 
@@ -523,13 +534,18 @@ async def run_extraction(payload: ExtractRequest):
                 "product": product_upper,
             }
 
-            if not doc.get("username") or not doc.get("encryptedPassword"):
+            # LIVECONNECT uses a shared session (cookies) instead of per-distributor credentials
+            if portal_type == "LIVECONNECT":
+                if not liveconnect_cookies:
+                    return {**base, **{"status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via LIVECONNECT SESSION menu", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
+                password = None
+            elif not doc.get("username") or not doc.get("encryptedPassword"):
                 return {**base, **{"status": "LOGIN_FAILED", "detail": "Credentials not set. Edit distributor to add username/password.", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
-
-            try:
-                password = decrypt_secret(doc["encryptedPassword"])
-            except Exception as e:
-                return {**base, **{"status": "ERROR", "detail": f"Password decrypt failed: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
+            else:
+                try:
+                    password = decrypt_secret(doc["encryptedPassword"])
+                except Exception as e:
+                    return {**base, **{"status": "ERROR", "detail": f"Password decrypt failed: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
 
             async def _shot(page, tag):
                 p = SCREENSHOTS_DIR / f"{entry_id}_{tid}_{tag}_{uuid.uuid4().hex[:6]}.png"
@@ -553,9 +569,9 @@ async def run_extraction(payload: ExtractRequest):
                     },
                 )
                 page = await ctx.new_page()
-                adapter = get_adapter(portal_type)
+                adapter = get_adapter(portal_type, liveconnect_cookies=liveconnect_cookies)
                 adapter.screenshotter = _shot
-                outcome = await adapter.extract(page, url, doc["username"], password, product_upper, qty or 0, distributor_name=name)
+                outcome = await adapter.extract(page, url, doc.get("username") or "", password or "", product_upper, qty or 0, distributor_name=name)
                 return {**base, **outcome.to_dict()}
             except Exception as e:
                 return {**base, **{"status": "ERROR", "detail": f"{e.__class__.__name__}: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}

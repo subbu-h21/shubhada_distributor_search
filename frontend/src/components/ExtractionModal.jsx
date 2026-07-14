@@ -37,14 +37,14 @@ const ExtractionModal = ({ open, onOpenChange }) => {
   const exportCsv = () => {
     if (!entry) return;
     const rows = [
-      ['product', 'distributor', 'portal', 'status', 'detail', 'matched', 'pack', 'mrp', 'ptr', 'available_qty', 'scheme', 'batch', 'expiry'],
+      ['product', 'distributor', 'portal', 'status', 'detail', 'seller', 'matched', 'manufacturer', 'pack', 'mrp', 'ptr', 'available_qty', 'scheme', 'batch', 'expiry'],
     ];
     for (const r of entry.results || []) {
       if (!r.items || r.items.length === 0) {
-        rows.push([entry.product, r.targetName, r.portal, r.status, r.detail || '', '', '', '', '', '', '', '', '']);
+        rows.push([entry.product, r.targetName, r.portal, r.status, r.detail || '', '', '', '', '', '', '', '', '', '', '']);
       } else {
         for (const it of r.items) {
-          rows.push([entry.product, r.targetName, r.portal, r.status, r.detail || '', it.matched_name || '', it.pack || '', it.mrp || '', it.ptr || '', it.available_qty || '', it.scheme || '', it.batch || '', it.expiry || '']);
+          rows.push([entry.product, r.targetName, r.portal, r.status, r.detail || '', it.seller || '', it.matched_name || '', it.manufacturer || '', it.pack || '', it.mrp || '', it.ptr || '', it.available_qty || '', it.scheme || '', it.batch || '', it.expiry || '']);
         }
       }
     }
