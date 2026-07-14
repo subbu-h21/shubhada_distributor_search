@@ -718,6 +718,54 @@ async def products_clear():
     return {"deleted": r.deleted_count}
 
 
+# ============================================================
+# LIVECONNECT — OTP session (used by liveconnect.in and its sellers)
+# ============================================================
+from liveconnect_session import LiveconnectSessionManager  # noqa: E402
+_lc_manager = LiveconnectSessionManager(db, _get_browser)
+
+
+class LcBeginRequest(BaseModel):
+    mobile: str
+
+
+class LcVerifyRequest(BaseModel):
+    pendingId: str
+    otp: str
+
+
+@api_router.get("/liveconnect/session")
+async def liveconnect_session_status():
+    return await _lc_manager.get_status()
+
+
+@api_router.post("/liveconnect/session/begin")
+async def liveconnect_session_begin(payload: LcBeginRequest):
+    mob = (payload.mobile or "").strip()
+    if not mob or not mob.isdigit() or len(mob) < 10:
+        raise HTTPException(400, "Enter a valid 10-digit mobile number")
+    res = await _lc_manager.begin(mob)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "Could not send OTP")
+    return res
+
+
+@api_router.post("/liveconnect/session/verify")
+async def liveconnect_session_verify(payload: LcVerifyRequest):
+    if not payload.pendingId or not payload.otp:
+        raise HTTPException(400, "pendingId and otp are required")
+    res = await _lc_manager.verify(payload.pendingId, payload.otp)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "OTP verification failed")
+    return res
+
+
+@api_router.delete("/liveconnect/session")
+async def liveconnect_session_clear():
+    await _lc_manager.clear_session()
+    return {"ok": True}
+
+
 @api_router.post("/products/upload")
 async def products_upload(file: UploadFile = File(...)):
     """Accepts .xlsx or .csv, extracts columns matching Product Name / Pack / Strength / MRP / Manufacturer / Code."""

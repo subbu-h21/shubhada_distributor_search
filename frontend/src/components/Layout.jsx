@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Search, Database, Clock, LogOut, User as UserIcon, KeyRound } from 'lucide-react';
+import { Search, Database, Clock, LogOut, User as UserIcon, KeyRound, Signal } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ChangePasswordSheet from './ChangePasswordSheet';
+import LiveconnectOtpSheet from './LiveconnectOtpSheet';
 
 const NAV = [
   { to: '/search', label: 'SEARCH', Icon: Search },
@@ -15,6 +16,7 @@ const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const [cpOpen, setCpOpen] = useState(false);
+  const [lcOpen, setLcOpen] = useState(false);
 
   const titles = {
     '/search': { title: 'SHUBHADA PHARMA SIRSI', subtitle: 'AI SEARCH \u00b7 DISTRIBUTOR AVAILABILITY' },
@@ -65,6 +67,11 @@ const Layout = ({ children }) => {
                         <div className="text-[10px] mono-track-wide text-neutral-500">{user?.username}</div>
                       </div>
                     </div>
+                    <button type="button" onClick={() => { setMenuOpen(false); setLcOpen(true); }}
+                      className="w-full text-left px-3 py-2.5 flex items-center gap-2 text-[12px] mono-track-tight hover:bg-emerald-50 border-b border-neutral-100"
+                      data-testid="menu-liveconnect-btn">
+                      <Signal className="w-3.5 h-3.5" /> LIVECONNECT SESSION
+                    </button>
                     <button type="button" onClick={() => { setMenuOpen(false); setCpOpen(true); }}
                       className="w-full text-left px-3 py-2.5 flex items-center gap-2 text-[12px] mono-track-tight hover:bg-emerald-50 border-b border-neutral-100">
                       <KeyRound className="w-3.5 h-3.5" /> CHANGE PASSWORD
@@ -105,6 +112,7 @@ const Layout = ({ children }) => {
       </nav>
 
       <ChangePasswordSheet open={cpOpen} onOpenChange={setCpOpen} />
+      <LiveconnectOtpSheet open={lcOpen} onOpenChange={setLcOpen} />
     </div>
   );
 };

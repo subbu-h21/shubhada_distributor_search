@@ -78,4 +78,11 @@ export const ExtractAPI = {
     api.post('/extract', { product, quantity: quantity ? Number(quantity) : null, target_ids: targetIds }).then((r) => r.data),
 };
 
+export const LiveconnectAPI = {
+  status: () => api.get('/liveconnect/session').then((r) => r.data),
+  begin: (mobile) => api.post('/liveconnect/session/begin', { mobile }).then((r) => r.data),
+  verify: (pendingId, otp) => api.post('/liveconnect/session/verify', { pendingId, otp }).then((r) => r.data),
+  clear: () => api.delete('/liveconnect/session').then((r) => r.data),
+};
+
 export default api;
