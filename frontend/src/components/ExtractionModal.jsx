@@ -60,8 +60,9 @@ const ExtractionModal = ({ open, onOpenChange }) => {
   const copyJson = () => {
     if (!entry) return;
     const text = JSON.stringify(entry, null, 2);
-    // Try modern clipboard API first; fall back to legacy textarea for iframes
-    // where the Clipboard API is blocked by permissions policy.
+    // Try legacy textarea copy FIRST — iframes commonly block the modern
+    // Clipboard API via Permissions Policy, and calling it can throw
+    // synchronously (not just reject the promise).
     const legacyCopy = () => {
       try {
         const ta = document.createElement('textarea');
@@ -72,20 +73,22 @@ const ExtractionModal = ({ open, onOpenChange }) => {
         ta.style.opacity = '0';
         document.body.appendChild(ta);
         ta.select();
-        document.execCommand('copy');
+        const ok = document.execCommand('copy');
         document.body.removeChild(ta);
-        toast('JSON copied');
-      } catch (e) {
-        toast.error('Copy blocked — long-press to select the JSON');
-      }
+        if (ok) { toast('JSON copied'); return true; }
+      } catch (e) {}
+      return false;
     };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text)
-        .then(() => toast('JSON copied'))
-        .catch(() => legacyCopy());
-    } else {
-      legacyCopy();
-    }
+    if (legacyCopy()) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+          .then(() => toast('JSON copied'))
+          .catch(() => toast.error('Copy blocked — please long-press to select the JSON'));
+        return;
+      }
+    } catch (e) {}
+    toast.error('Copy blocked — please long-press to select the JSON');
   };
 
   return (
