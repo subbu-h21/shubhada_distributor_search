@@ -248,129 +248,140 @@ class RetailioAdapter(BaseAdapter):
                 out.results_screenshot = await self._screenshot(page, "no-match")
                 return out
 
-            # Click the best matching autocomplete row to open the DETAIL VIEW.
-            # The detail view lists each distributor's Qty, Scheme, MRP, PTR
-            # for the selected product — exactly what we want.
-            best_index = best.get("index")
-            clicked_ok = False
-            try:
-                clicked_ok = bool(await page.evaluate(
-                    """(idx) => {
-                        const rows = document.querySelectorAll('div.VQ66y');
-                        if (idx < rows.length) {
-                            rows[idx].click();
-                            return true;
-                        }
-                        return false;
-                    }""",
-                    best_index,
-                ))
-            except Exception:
-                clicked_ok = False
-            out.debug["detail_clicked"] = clicked_ok
-            await page.wait_for_timeout(4500)
-            out.results_screenshot = await self._screenshot(page, "detail-view")
+            # We'll drill into ALL near-best variants (score ≥ best-20) and merge.
+            # This ensures we capture the full distributor list across every
+            # matching pack-size (e.g. "10 NO'S" has 6 distributors, "15 NO'S"
+            # has 3 — user wants ALL of them).
+            near_best = [(s, r) for s, r in scored if s >= max(ACCEPT_THRESHOLD, best_s - 20)]
+            out.debug["variants_to_drill"] = [{"name": r.get("name"), "dist_count": r.get("dist_count"), "score": s} for s, r in near_best]
 
-            # Parse the per-distributor detail view.
-            detail = await page.evaluate(r"""() => {
-                const t = (document.body.innerText || '');
-                // Find the "Selected Product" or the "N distributor(s) found!"
-                // heading and slice from there.
-                const anchor = t.search(/\d+\s*distributor\(?s\)?\s*found/i);
-                if (anchor < 0) return null;
-                // Grab a reasonable chunk after the anchor (2000 chars)
-                const chunk = t.slice(anchor, anchor + 4000);
-                // Also capture the "Selected Product" block above the anchor
-                const abovePos = Math.max(0, anchor - 300);
-                const header = t.slice(abovePos, anchor);
-                return { header, chunk };
-            }""") or {}
+            all_items: List[ExtractedItem] = []
+            seen_sellers: set = set()  # dedupe by (seller_name, matched_name, ptr)
 
-            distributors: list[dict] = []
-            if detail.get("chunk"):
-                chunk = detail["chunk"]
-                # Split by MRP occurrences — each seller block ends with MRP/PTR
-                # values. We'll walk the text sequentially looking for markers.
-                # Simpler: use a regex that captures the seller block.
-                # Pattern: seller name (line before "Qty") ... MRP ₹NN ... PTR ₹NN
-                lines = [l.strip() for l in chunk.split("\n") if l.strip()]
-                cur: dict = {}
-                for i, ln in enumerate(lines):
-                    m_qty = re.match(r"^Qty\s+(\d+)$", ln, re.I)
-                    if m_qty:
-                        # Seller name is the most recent non-descriptor line above
-                        # (skip "Delivery by ..." lines and generic phrases).
-                        for j in range(i - 1, max(-1, i - 8), -1):
-                            cand = lines[j]
-                            if re.match(r"^delivery by", cand, re.I): continue
-                            if re.match(r"^this order may take", cand, re.I): continue
-                            if re.match(r"^Add to Cart", cand, re.I): continue
-                            if cand in ("MRP", "PTR", "Qty", "MARGIN 20%"): continue
-                            if re.match(r"^(No Schemes|Scheme|GST|Dist\.?Discount|MARGIN|₹|\d+\.?\d*%?$)", cand, re.I): continue
-                            # Heuristic: seller names contain a comma or Pvt/Pharma
-                            if len(cand) > 4 and (',' in cand or re.search(r"pharma|pvt|ltd|medi|distributor|store", cand, re.I)):
-                                cur = {"seller": cand}
-                                break
-                        cur["stock"] = m_qty.group(1)
+            for var_idx, (var_score, variant) in enumerate(near_best):
+                # For variants after the first, we need to go back to the
+                # search page + re-type + re-open dropdown to click the next
+                # row (Retailio doesn't allow "back" navigation cleanly).
+                if var_idx > 0:
+                    try:
+                        # Return to Order by Product view
+                        await self._click_order_by_product(page)
+                        await page.wait_for_timeout(3000)
+                        search_el = await page.query_selector(SEARCH_INPUT)
+                        if not search_el:
+                            search_el = await page.query_selector('input[placeholder="Search for a product"]')
+                        if not search_el:
+                            continue
+                        await search_el.click()
+                        await search_el.fill("")
+                        for i, tok in enumerate(raw_tokens):
+                            piece = (" " if i > 0 else "") + tok
+                            try: await search_el.type(piece, delay=90)
+                            except Exception:
+                                try: await page.keyboard.type(piece, delay=90)
+                                except Exception: pass
+                            await page.wait_for_timeout(700 if i < len(raw_tokens) - 1 else 2500)
+                    except Exception:
                         continue
 
-                    if "seller" in cur:
-                        # Scheme line
-                        if re.match(r"^No\s*Schemes$", ln, re.I):
-                            cur["scheme"] = None
-                            continue
-                        m_sch = re.match(r"^Scheme[:\s]*(.+)$", ln, re.I)
-                        if m_sch:
-                            v = m_sch.group(1).strip()
-                            cur["scheme"] = None if re.match(r"^no", v, re.I) else v
-                            continue
-                        # If next line is a scheme value like "10+1" alone
-                        if re.match(r"^\d+\s*\+\s*\d+$", ln):
-                            cur["scheme"] = ln
-                            continue
-                        # MRP line — value is on the NEXT line
-                        if ln.upper() == "MRP":
-                            if i + 1 < len(lines):
-                                v = lines[i + 1]
-                                m_v = re.search(r"([\d.,]+)", v)
-                                if m_v:
-                                    cur["mrp"] = m_v.group(1).replace(",", "")
-                            continue
-                        # PTR line — value is on the NEXT line
-                        if ln.upper() == "PTR":
-                            if i + 1 < len(lines):
-                                v = lines[i + 1]
-                                m_v = re.search(r"([\d.,]+)", v)
-                                if m_v:
-                                    cur["ptr"] = m_v.group(1).replace(",", "")
-                            continue
-                        # End-of-block marker
-                        if ln.lower() == "add to cart":
-                            if cur.get("seller"):
-                                distributors.append(cur)
-                            cur = {}
-                # Push final if not closed
-                if cur.get("seller"):
-                    distributors.append(cur)
+                # Click the variant's autocomplete row
+                variant_index = variant.get("index")
+                try:
+                    await page.evaluate(
+                        """(idx) => {
+                            const rows = document.querySelectorAll('div.VQ66y');
+                            if (idx < rows.length) rows[idx].click();
+                        }""",
+                        variant_index,
+                    )
+                except Exception:
+                    continue
+                await page.wait_for_timeout(4500)
 
-            items: List[ExtractedItem] = []
-            for d in distributors:
-                items.append(ExtractedItem(
-                    product=product,
-                    matched_name=best.get("name") or None,
-                    pack=best.get("pack") or None,
-                    manufacturer=best.get("mfr") or None,
-                    seller=d.get("seller") or None,
-                    available_qty=d.get("stock") or None,
-                    scheme=d.get("scheme") or None,
-                    mrp=d.get("mrp") or None,
-                    ptr=d.get("ptr") or None,
-                ))
+                if var_idx == 0:
+                    out.results_screenshot = await self._screenshot(page, "detail-view")
+
+                # Parse the per-distributor detail view for this variant
+                detail = await page.evaluate(r"""() => {
+                    const t = (document.body.innerText || '');
+                    const anchor = t.search(/\d+\s*distributor\(?s\)?\s*found/i);
+                    if (anchor < 0) return null;
+                    const chunk = t.slice(anchor, anchor + 8000);
+                    return { chunk };
+                }""") or {}
+
+                variant_dists: list[dict] = []
+                if detail.get("chunk"):
+                    chunk = detail["chunk"]
+                    lines = [l.strip() for l in chunk.split("\n") if l.strip()]
+                    cur: dict = {}
+                    for i, ln in enumerate(lines):
+                        m_qty = re.match(r"^Qty\s+(\d+)$", ln, re.I)
+                        if m_qty:
+                            for j in range(i - 1, max(-1, i - 8), -1):
+                                cand = lines[j]
+                                if re.match(r"^delivery by", cand, re.I): continue
+                                if re.match(r"^this order may take", cand, re.I): continue
+                                if re.match(r"^Add to Cart", cand, re.I): continue
+                                if cand in ("MRP", "PTR", "Qty", "MARGIN 20%"): continue
+                                if re.match(r"^(No Schemes|Scheme|GST|Dist\.?Discount|MARGIN|₹|\d+\.?\d*%?$)", cand, re.I): continue
+                                if len(cand) > 4 and (',' in cand or re.search(r"pharma|pvt|ltd|medi|distributor|store|enterprise|agencies", cand, re.I)):
+                                    cur = {"seller": cand}
+                                    break
+                            cur["stock"] = m_qty.group(1)
+                            continue
+
+                        if "seller" in cur:
+                            if re.match(r"^No\s*Schemes$", ln, re.I):
+                                cur["scheme"] = None; continue
+                            m_sch = re.match(r"^Scheme[:\s]*(.+)$", ln, re.I)
+                            if m_sch:
+                                v = m_sch.group(1).strip()
+                                cur["scheme"] = None if re.match(r"^no", v, re.I) else v
+                                continue
+                            if re.match(r"^\d+\s*\+\s*\d+$", ln):
+                                cur["scheme"] = ln; continue
+                            if ln.upper() == "MRP":
+                                if i + 1 < len(lines):
+                                    m_v = re.search(r"([\d.,]+)", lines[i + 1])
+                                    if m_v: cur["mrp"] = m_v.group(1).replace(",", "")
+                                continue
+                            if ln.upper() == "PTR":
+                                if i + 1 < len(lines):
+                                    m_v = re.search(r"([\d.,]+)", lines[i + 1])
+                                    if m_v: cur["ptr"] = m_v.group(1).replace(",", "")
+                                continue
+                            if ln.lower() == "add to cart":
+                                if cur.get("seller"):
+                                    variant_dists.append(cur)
+                                cur = {}
+                    if cur.get("seller"):
+                        variant_dists.append(cur)
+
+                # Merge with dedupe by (seller name normalised, PTR)
+                for d in variant_dists:
+                    seller = d.get("seller") or ""
+                    key = (re.sub(r"[^a-z0-9]", "", seller.lower()), d.get("ptr") or "", variant.get("name") or "")
+                    if key in seen_sellers:
+                        continue
+                    seen_sellers.add(key)
+                    all_items.append(ExtractedItem(
+                        product=product,
+                        matched_name=variant.get("name") or None,
+                        pack=variant.get("pack") or None,
+                        manufacturer=variant.get("mfr") or None,
+                        seller=seller,
+                        available_qty=d.get("stock") or None,
+                        scheme=d.get("scheme") or None,
+                        mrp=d.get("mrp") or None,
+                        ptr=d.get("ptr") or None,
+                    ))
+
+            items = all_items
 
             # Fallback: if drilling failed, still emit the dropdown-level rows
             if not items:
-                accepted = [r for s, r in scored if s >= max(ACCEPT_THRESHOLD, best_s - 25)]
-                for r in accepted:
+                for _, r in near_best:
                     dc = r.get("dist_count") or "0"
                     aq = dc if r.get("in_stock") else "0"
                     items.append(ExtractedItem(
@@ -384,7 +395,7 @@ class RetailioAdapter(BaseAdapter):
             out.items = items
             in_stock = sum(1 for it in items if (it.available_qty or "").isdigit() and int(it.available_qty) > 0)
             out.status = "SUCCESS" if items else "NOT_FOUND"
-            out.detail = f"{len(items)} seller(s), {in_stock} in stock"
+            out.detail = f"{len(items)} seller(s) across {len(near_best)} variant(s), {in_stock} in stock"
             if quantity:
                 total = sum(int(it.available_qty) for it in items if (it.available_qty or "").isdigit())
                 out.can_fulfill = total >= quantity

@@ -336,12 +336,21 @@ class LiveconnectAdapter(BaseAdapter):
         items: List[ExtractedItem] = []
         for block in soup.select(".dist-list"):
             try:
-                # Seller name is in .qtydistname (before " - ")
+                # Seller name is in .qtydistname formatted as "<Seller> - <SubAccount>".
+                # We keep BOTH so each row is uniquely identifiable (a single
+                # seller can appear multiple times across sub-customer accounts).
                 qname = block.select_one(".qtydistname")
                 seller = ""
+                sub_account = ""
                 if qname:
-                    parts = qname.get_text(" ", strip=True).split(" - ")
-                    seller = parts[0].strip() if parts else ""
+                    full = _clean(qname.get_text(" ", strip=True))
+                    if " - " in full:
+                        seller, sub_account = full.split(" - ", 1)
+                        seller = seller.strip(); sub_account = sub_account.strip()
+                    else:
+                        seller = full
+                # Combine into a display name so exploded rows are distinct
+                display_seller = f"{seller} · {sub_account}" if sub_account else seller
 
                 # First .cardvalues p contains "Mfr - Product"
                 mfr = ""
@@ -425,10 +434,9 @@ class LiveconnectAdapter(BaseAdapter):
                     available_qty=stock,
                     scheme=scheme,
                     manufacturer=mfr or None,
-                    seller=seller or None,
-                    raw_row=[seller] + (labels or []) + [v for _, v in [(k, w) for k, w in clean_values if k == "text"]],
+                    seller=display_seller or None,
+                    raw_row=[display_seller] + (labels or []) + [v for _, v in [(k, w) for k, w in clean_values if k == "text"]],
                 ))
-                # Store the seller name in raw_row[0] for now (we don't have a dedicated field)
             except Exception:
                 continue
         return items
