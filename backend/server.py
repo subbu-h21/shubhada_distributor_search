@@ -611,8 +611,8 @@ async def run_extraction(payload: ExtractRequest):
     try:
         browser = await _get_browser()
 
-        # Run all distributors in parallel (limit concurrency to 4)
-        sem = asyncio.Semaphore(4)
+        # Run all distributors in parallel (up to 10 at once)
+        sem = asyncio.Semaphore(10)
         async def _guarded(d):
             async with sem:
                 return await _run_one_distributor(
