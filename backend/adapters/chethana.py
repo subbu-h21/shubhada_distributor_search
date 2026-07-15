@@ -201,16 +201,19 @@ class ChethanaAdapter(BaseAdapter):
         return best_txt
 
     async def _read_selected(self, page):
-        """Return dict of populated fields after a suggestion is clicked."""
+        """Return dict of populated fields after a suggestion is clicked and
+        quantity has been entered. Reads from the committed table row (not the
+        top-level "scratch-pad" inputs which get cleared after commit)."""
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=15000)
         except Exception:
             pass
         await page.wait_for_timeout(2500)
         try:
-            data = await page.evaluate("""() => {
+            data = await page.evaluate(r"""() => {
                 const g = id => (document.getElementById(id) || {}).value || '';
-                return {
+                // Try the top-level scratch pad first (may be pre-commit)
+                const pad = {
                     code:  g('ctl00_ContentPlaceHolder1_txt_pdt_code').trim(),
                     desc:  g('ctl00_ContentPlaceHolder1_txt_descrptn').trim(),
                     mrp:   g('ctl00_ContentPlaceHolder1_Txtmrp').trim(),
@@ -218,6 +221,50 @@ class ChethanaAdapter(BaseAdapter):
                     disc:  g('ctl00_ContentPlaceHolder1_txt_discount').trim(),
                     total: g('ctl00_ContentPlaceHolder1_txt_total').trim(),
                 };
+                // Now try the committed row inside the products table (data row
+                // with a Code + Description + Qty). Any <tr> with 6+ cells and
+                // a numeric code in first cell (or the second row after headers).
+                const rows = document.querySelectorAll('table tr');
+                let row = null;
+                for (const r of rows) {
+                    const cells = r.querySelectorAll('td');
+                    if (cells.length < 6) continue;
+                    const cellTxt = (idx) => {
+                        const c = cells[idx];
+                        if (!c) return '';
+                        // Prefer <input> value, fall back to text
+                        const inp = c.querySelector('input, textarea');
+                        if (inp && (inp.value || '') !== '') return (inp.value || '').trim();
+                        return (c.innerText || c.textContent || '').trim();
+                    };
+                    const code = cellTxt(0);
+                    const desc = cellTxt(1);
+                    if (!code || !desc) continue;
+                    if (!/^\d+$/.test(code)) continue;
+                    // description should contain some letters
+                    if (!/[A-Za-z]/.test(desc)) continue;
+                    row = {
+                        code, desc,
+                        qty:    cellTxt(2),
+                        free:   cellTxt(3),
+                        mrp:    cellTxt(4),
+                        disc:   cellTxt(5),
+                        amount: cellTxt(6) || '',
+                    };
+                    break;
+                }
+                // Merge — prefer row values when present, fall back to pad.
+                const merged = { ...pad };
+                if (row) {
+                    if (row.code) merged.code = row.code;
+                    if (row.desc) merged.desc = row.desc;
+                    if (row.mrp)  merged.mrp  = row.mrp;
+                    if (row.free) merged.free = row.free;
+                    if (row.disc) merged.disc = row.disc;
+                    if (row.qty)  merged.qty  = row.qty;
+                    if (row.amount) merged.amount = row.amount;
+                }
+                return merged;
             }""")
             return data
         except Exception:
@@ -247,51 +294,87 @@ class ChethanaAdapter(BaseAdapter):
                 out.detail = "No matching product in CHETHANA autocomplete"
                 return out
 
+            # After picking a suggestion, the CHETHANA form fires a POSTBACK
+            # which re-renders the page. If we immediately run page.evaluate
+            # we can hit "Execution context was destroyed". Wait for the
+            # network to settle before touching the DOM again.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=12000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(600)
+
             # Fill quantity + wait for stock-color paint.
             # Prior iterations tried Enter (postback wiped value) and Tab (didn't
             # trigger portal's stock check). Now: directly SET value via JS +
             # dispatch input/change/keyup/blur events. Then poll for the colored
-            # <tr> for up to 5 seconds.
+            # <tr> for up to 5 seconds. Retry the whole block up to 3× if the
+            # context is destroyed by another postback in-flight.
             qty_to_fill = quantity if quantity and quantity > 0 else 1
             self._last_error = ""
-            try:
-                # Ensure the qty input is visible + not disabled
-                await page.wait_for_function(
-                    f"() => {{ const e=document.getElementById('{QTY_SEL[1:]}'); return e && !e.disabled && e.offsetParent!==null; }}",
-                    timeout=8000,
-                )
-                await page.evaluate(f"""(v) => {{
-                    const el = document.getElementById('{QTY_SEL[1:]}');
-                    if (!el) return 'no-elem';
-                    el.focus();
-                    el.value = v;
-                    ['input','change','keyup','blur'].forEach(t =>
-                        el.dispatchEvent(new Event(t, {{ bubbles: true }}))
-                    );
-                    return el.value;
-                }}""", str(qty_to_fill))
-            except Exception as e:
-                self._last_error = f"qty JS-fill: {e}"
+            filled_ok = False
+            for attempt in range(3):
+                try:
+                    # Ensure the qty input is visible + not disabled
+                    await page.wait_for_function(
+                        f"() => {{ const e=document.getElementById('{QTY_SEL[1:]}'); return e && !e.disabled && e.offsetParent!==null; }}",
+                        timeout=8000,
+                    )
+                    await page.evaluate(f"""(v) => {{
+                        const el = document.getElementById('{QTY_SEL[1:]}');
+                        if (!el) return 'no-elem';
+                        el.focus();
+                        el.value = v;
+                        ['input','change','keyup','blur'].forEach(t =>
+                            el.dispatchEvent(new Event(t, {{ bubbles: true }}))
+                        );
+                        return el.value;
+                    }}""", str(qty_to_fill))
+                    filled_ok = True
+                    break
+                except Exception as e:
+                    msg = str(e)
+                    self._last_error = f"qty JS-fill attempt {attempt+1}: {e}"
+                    if "Execution context was destroyed" in msg or "navigation" in msg.lower():
+                        # A postback destroyed our context — wait for the next
+                        # network-idle and retry.
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=8000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(800)
+                        continue
+                    break
 
             # Poll up to 5s for the colored status row to appear
             stock_status = None
             for _ in range(10):
                 await page.wait_for_timeout(500)
-                stock_status = await page.evaluate("""() => {
-                    const wanted = [
-                        { rgb: 'rgb(0, 128, 0)',   label: 'AVAILABLE' },
-                        { rgb: 'rgb(255, 255, 0)', label: 'INSUFFICIENT' },
-                        { rgb: 'rgb(255, 0, 0)',   label: 'UNAVAILABLE' },
-                    ];
-                    for (const el of document.querySelectorAll('tr, td')) {
-                        if (!el.offsetParent) continue;
-                        if ((el.className || '').includes('style65')) continue;
-                        const bg = window.getComputedStyle(el).backgroundColor;
-                        const m = wanted.find(w => w.rgb === bg);
-                        if (m) return { color: bg, label: m.label };
-                    }
-                    return null;
-                }""")
+                try:
+                    stock_status = await page.evaluate("""() => {
+                        const wanted = [
+                            { rgb: 'rgb(0, 128, 0)',   label: 'AVAILABLE' },
+                            { rgb: 'rgb(255, 255, 0)', label: 'INSUFFICIENT' },
+                            { rgb: 'rgb(255, 0, 0)',   label: 'UNAVAILABLE' },
+                        ];
+                        for (const el of document.querySelectorAll('tr, td')) {
+                            if (!el.offsetParent) continue;
+                            if ((el.className || '').includes('style65')) continue;
+                            const bg = window.getComputedStyle(el).backgroundColor;
+                            const m = wanted.find(w => w.rgb === bg);
+                            if (m) return { color: bg, label: m.label };
+                        }
+                        return null;
+                    }""")
+                except Exception as e:
+                    # Context destroyed by another postback; wait and continue polling
+                    if "Execution context was destroyed" in str(e) or "navigation" in str(e).lower():
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=5000)
+                        except Exception:
+                            pass
+                        continue
+                    stock_status = None
                 if stock_status:
                     break
 
@@ -301,19 +384,40 @@ class ChethanaAdapter(BaseAdapter):
             out.results_screenshot = await self._screenshot(page, "results-with-color")
 
             stock_label = (stock_status or {}).get("label")
+            # Parse the picked_text (~-separated: name ~ code ~ pack ~ ptr) —
+            # the last field is the PTR (net rate per unit) that the autocomplete
+            # surfaced.
+            parts = [p.strip() for p in (picked_text or "").split("~")]
+            pack_from_pick = parts[2] if len(parts) > 2 else None
+            ptr_from_pick = None
+            if len(parts) > 3:
+                m = re.search(r"\d+(?:\.\d+)?", parts[3])
+                if m:
+                    ptr_from_pick = m.group(0)
+
+            # PTR fallback: derive from committed row (amount / qty)
+            row_qty = (data.get("qty") or "").strip()
+            row_amount = (data.get("amount") or "").strip()
+            ptr_from_row = None
+            try:
+                if row_qty and row_amount and row_qty.isdigit() and float(row_qty) > 0:
+                    ptr_from_row = f"{float(row_amount) / float(row_qty):.2f}"
+            except Exception:
+                pass
+
             item = ExtractedItem(
                 product=product,
                 matched_name=data.get("desc") or picked_text.split("~", 1)[0].strip(),
-                pack=(picked_text.split("~")[2].strip() if picked_text.count("~") >= 2 else None),
+                pack=pack_from_pick,
                 mrp=data.get("mrp") or None,
-                ptr=None,  # CHETHANA doesn't expose PTR directly on this form
+                ptr=ptr_from_pick or ptr_from_row,
                 available_qty=("in-stock" if stock_label == "AVAILABLE" else
                                ("partial" if stock_label == "INSUFFICIENT" else
                                 ("0" if stock_label == "UNAVAILABLE" else None))),
                 scheme=data.get("free") or None,
                 batch=None,
                 expiry=None,
-                raw_row=[picked_text, f"stockStatus={stock_label}" if stock_label else ""],
+                raw_row=[picked_text, f"stockStatus={stock_label}" if stock_label else "", f"amount={row_amount}", f"qty={row_qty}"],
             )
             out.items = [item]
             # If stock indicator says UNAVAILABLE, downgrade to NOT_FOUND-with-price
