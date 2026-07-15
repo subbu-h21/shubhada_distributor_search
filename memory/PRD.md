@@ -29,6 +29,7 @@ with screenshots.
 | CHETHANA (CHIRAG PHARMA / chiragpharma.in) | ✅ Live | Code, Product, Pack, MRP |
 | LIVECONNECT (8 sellers via search-all-sellers) | ✅ Live | Seller, Product, Mfr, Pack, MRP, PTR, Stock, Scheme, Tax |
 | VARDHAMAN Shimoga (`fgtsmg.fortiddns.com:83`) | ⚠️ IP-blocked from container (port 83 refuses non-Indian IPs) |
+| RETAILIO (order.retailio.in) | ✅ Live | Product, Pack, Stock, MRP, PTR, Scheme (OTP-based session) |
 
 ## Key Files
 - `/app/backend/server.py` — API routes (needs future split into `routes/`).

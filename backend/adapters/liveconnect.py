@@ -105,14 +105,46 @@ class LiveconnectAdapter(BaseAdapter):
                     pass
             page.on("response", lambda r: _on_response(r))
 
-            # Type product word-by-word into the search input
-            el = await page.query_selector(SEARCH_INPUT)
+            # Type product word-by-word into the search input. Try both the
+            # legacy `#item-search` (order-book) and the new Marketplace
+            # top-bar "Search by product" input.
+            search_candidates = [
+                SEARCH_INPUT,
+                'input[placeholder*="Search by product" i]',
+                'input[placeholder*="Search product" i]',
+                'input.search-input',
+                'input[type="text"][autocomplete="off"]:visible',
+            ]
+            el = None
+            used_selector = None
+            for sel in search_candidates:
+                try:
+                    e = await page.query_selector(sel)
+                    if e and await e.is_visible():
+                        el = e
+                        used_selector = sel
+                        break
+                except Exception:
+                    continue
             if not el:
                 out.status = "ERROR"
-                out.detail = "Search input not found on page"
+                out.detail = "Search input not found on LIVECONNECT page"
+                out.results_screenshot = await self._screenshot(page, "no-search-input")
                 return out
+            out.debug["search_selector"] = used_selector
+            try:
+                await el.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
             try:
                 await el.click()
+            except Exception:
+                pass
+            try:
+                await el.focus()
+            except Exception:
+                pass
+            try:
                 await el.fill("")
             except Exception:
                 pass
@@ -124,25 +156,91 @@ class LiveconnectAdapter(BaseAdapter):
                 return out
             query_canon = canon(product)
 
+            # Use element.type() (fires input events on the element) instead
+            # of page.keyboard.type() which relies on focus being retained.
+            # After each token we also dispatch a fake `input`/`keyup` event
+            # via JS so jQuery-autocomplete handlers definitely wake up.
+            typed_so_far = ""
             for i, tok in enumerate(raw_tokens):
-                if i > 0:
-                    try: await page.keyboard.type(" ", delay=60)
-                    except Exception: pass
+                piece = (" " if i > 0 else "") + tok
                 try:
-                    await page.keyboard.type(tok, delay=90)
+                    await el.type(piece, delay=90)
                 except Exception:
-                    break
-                await page.wait_for_timeout(900 if i < len(raw_tokens) - 1 else 2200)
+                    try: await page.keyboard.type(piece, delay=90)
+                    except Exception: break
+                typed_so_far += piece
+                # Nudge JS handlers explicitly (some jQuery UIs only listen
+                # to explicit .keyup or .input events).
+                try:
+                    await el.evaluate(
+                        """(node, val) => {
+                            try {
+                                node.value = val;
+                                const evs = ['input','keyup','change','keydown'];
+                                for (const t of evs) {
+                                    node.dispatchEvent(new Event(t, {bubbles:true}));
+                                }
+                                if (window.jQuery) {
+                                    try { window.jQuery(node).trigger('input').trigger('keyup').trigger('change'); } catch(e){}
+                                }
+                            } catch(e){}
+                        }""",
+                        typed_so_far,
+                    )
+                except Exception:
+                    pass
+                await page.wait_for_timeout(950 if i < len(raw_tokens) - 1 else 3200)
 
             out.search_screenshot = await self._screenshot(page, "autocomplete-open")
 
-            # Collect autocomplete rows — first <td> in each row is the product name
-            rows = await page.query_selector_all(SUGGESTION_ROW)
+            # Collect autocomplete rows. LIVECONNECT has TWO shapes:
+            #   (a) legacy jQuery-UI table rows:   tr.ui-menu-item
+            #   (b) newer Marketplace search:      ul.ui-autocomplete li,
+            #       .ui-menu-item, .dropdown-menu li, [role='option']
+            suggestion_selectors = [
+                SUGGESTION_ROW,
+                'ul.ui-autocomplete li.ui-menu-item',
+                'ul.ui-autocomplete li',
+                '.ui-menu-item',
+                'ul.dropdown-menu li',
+                '.autocomplete-suggestions .suggestion',
+                'li[role="option"]',
+                'div[role="option"]',
+            ]
+            rows = []
+            used_row_sel = None
+            for rs in suggestion_selectors:
+                try:
+                    els = await page.query_selector_all(rs)
+                    visible_els = []
+                    for e in els:
+                        try:
+                            if await e.is_visible():
+                                visible_els.append(e)
+                        except Exception:
+                            continue
+                    if visible_els:
+                        rows = visible_els
+                        used_row_sel = rs
+                        break
+                except Exception:
+                    continue
+            out.debug["suggestion_selector"] = used_row_sel
+
             candidates = []
             for r in rows:
                 try:
+                    name_col = ""
                     name_td = await r.query_selector("td:nth-child(1)")
-                    name_col = _clean(await name_td.text_content()) if name_td else ""
+                    if name_td:
+                        name_col = _clean(await name_td.text_content()) or ""
+                    if not name_col:
+                        # Newer UI: read the first text line of the item
+                        try:
+                            full_txt = _clean(await r.inner_text()) or ""
+                        except Exception:
+                            full_txt = _clean(await r.text_content()) or ""
+                        name_col = (full_txt.split("\n")[0] if full_txt else "").strip()
                     if not name_col:
                         continue
                     full = _clean(await r.text_content()) or name_col

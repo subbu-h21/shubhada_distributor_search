@@ -161,6 +161,8 @@ def infer_portal_type(portal: str) -> str:
         return "LIVECONNECT"
     if "VARDHAMAN" in p or "EASYSOL" in p:
         return "VARDHAMAN"
+    if "RETAILIO" in p:
+        return "RETAILIO"
     return "GENERIC"
 
 
@@ -269,6 +271,7 @@ async def seed_if_empty():
             {"name": "KAPILA MEDICAL AGENCIES", "url": "https://www.sunshop.co.in", "portal": "SUNSHOP", "portalType": "SUNSHOP"},
             {"name": "CHIRAG PHARMA", "url": "http://www.chethanapharma.in", "portal": "CHETHANA", "portalType": "GENERIC"},
             {"name": "VARDHAMAN MEDISALES PVT LTD", "url": "http://easysol.co.in", "portal": "VARDHAMAN", "portalType": "GENERIC"},
+            {"name": "RETAILIO", "url": "https://order.retailio.in/rio/secure-login", "portal": "RETAILIO", "portalType": "RETAILIO"},
         ]
         docs = []
         for s in seeds:
@@ -487,7 +490,7 @@ async def test_login(tid: str):
             except Exception: pass
 
 
-async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[int], entry_id: str, liveconnect_cookies=None, force_candidate_name: Optional[str] = None) -> Dict[str, Any]:
+async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[int], entry_id: str, liveconnect_cookies=None, retailio_cookies=None, retailio_local_storage=None, force_candidate_name: Optional[str] = None) -> Dict[str, Any]:
     """Run a single distributor extraction and return a result dict (used by
     both /extract and /extract/manual-pick)."""
     tid = doc["id"]
@@ -509,6 +512,10 @@ async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[i
     if portal_type == "LIVECONNECT":
         if not liveconnect_cookies:
             return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via LIVECONNECT SESSION menu"}}
+        password = None
+    elif portal_type == "RETAILIO":
+        if not retailio_cookies:
+            return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via RETAILIO SESSION menu"}}
         password = None
     elif not doc.get("username") or not doc.get("encryptedPassword"):
         return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "Credentials not set. Edit distributor to add username/password."}}
@@ -540,7 +547,12 @@ async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[i
             },
         )
         page = await ctx.new_page()
-        adapter = get_adapter(portal_type, liveconnect_cookies=liveconnect_cookies)
+        adapter = get_adapter(
+            portal_type,
+            liveconnect_cookies=liveconnect_cookies,
+            retailio_cookies=retailio_cookies,
+            retailio_local_storage=retailio_local_storage,
+        )
         adapter.screenshotter = _shot
         outcome = await adapter.extract(page, url, doc.get("username") or "", password or "", product_upper, qty or 0, distributor_name=name, force_candidate_name=force_candidate_name)
         return {**base, **outcome.to_dict()}
@@ -583,6 +595,17 @@ async def run_extraction(payload: ExtractRequest):
         except Exception:
             liveconnect_cookies = None
 
+    # Preload RETAILIO session (shared across all RETAILIO targets)
+    retailio_cookies = None
+    retailio_local_storage = None
+    if any(d.get("portalType") == "RETAILIO" or infer_portal_type(d.get("portal", "")) == "RETAILIO" for d in docs):
+        try:
+            r_doc = await db.retailio_session.find_one({"_id": "default"})
+            retailio_cookies = (r_doc or {}).get("cookies")
+            retailio_local_storage = (r_doc or {}).get("localStorage")
+        except Exception:
+            retailio_cookies = None
+
     try:
         browser = await _get_browser()
 
@@ -590,7 +613,12 @@ async def run_extraction(payload: ExtractRequest):
         sem = asyncio.Semaphore(4)
         async def _guarded(d):
             async with sem:
-                return await _run_one_distributor(browser, d, product_upper, qty, entry_id, liveconnect_cookies=liveconnect_cookies)
+                return await _run_one_distributor(
+                    browser, d, product_upper, qty, entry_id,
+                    liveconnect_cookies=liveconnect_cookies,
+                    retailio_cookies=retailio_cookies,
+                    retailio_local_storage=retailio_local_storage,
+                )
 
         results = await asyncio.gather(*[_guarded(d) for d in docs])
     finally:
@@ -643,11 +671,20 @@ async def extract_manual_pick(payload: ManualPickRequest):
     qty = hist.get("quantity")
 
     liveconnect_cookies = None
+    retailio_cookies = None
+    retailio_local_storage = None
     ptype = doc.get("portalType") or infer_portal_type(doc.get("portal", ""))
     if ptype == "LIVECONNECT":
         try:
             lc_doc = await db.liveconnect_session.find_one({"_id": "default"})
             liveconnect_cookies = (lc_doc or {}).get("cookies")
+        except Exception:
+            pass
+    if ptype == "RETAILIO":
+        try:
+            r_doc = await db.retailio_session.find_one({"_id": "default"})
+            retailio_cookies = (r_doc or {}).get("cookies")
+            retailio_local_storage = (r_doc or {}).get("localStorage")
         except Exception:
             pass
 
@@ -657,6 +694,8 @@ async def extract_manual_pick(payload: ManualPickRequest):
         new_result = await _run_one_distributor(
             browser, doc, product_upper, qty, payload.history_id,
             liveconnect_cookies=liveconnect_cookies,
+            retailio_cookies=retailio_cookies,
+            retailio_local_storage=retailio_local_storage,
             force_candidate_name=payload.candidate_name,
         )
     finally:
@@ -861,6 +900,54 @@ async def liveconnect_session_clear():
     return {"ok": True}
 
 
+# ============================================================
+# RETAILIO — OTP session (order.retailio.in)
+# ============================================================
+from retailio_session import RetailioSessionManager  # noqa: E402
+_rio_manager = RetailioSessionManager(db, _get_browser)
+
+
+class RioBeginRequest(BaseModel):
+    mobile: str
+
+
+class RioVerifyRequest(BaseModel):
+    pendingId: str
+    otp: str
+
+
+@api_router.get("/retailio/session")
+async def retailio_session_status():
+    return await _rio_manager.get_status()
+
+
+@api_router.post("/retailio/session/begin")
+async def retailio_session_begin(payload: RioBeginRequest):
+    mob = (payload.mobile or "").strip()
+    if not mob or not mob.isdigit() or len(mob) < 10:
+        raise HTTPException(400, "Enter a valid 10-digit mobile number")
+    res = await _rio_manager.begin(mob)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "Could not send OTP")
+    return res
+
+
+@api_router.post("/retailio/session/verify")
+async def retailio_session_verify(payload: RioVerifyRequest):
+    if not payload.pendingId or not payload.otp:
+        raise HTTPException(400, "pendingId and otp are required")
+    res = await _rio_manager.verify(payload.pendingId, payload.otp)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "OTP verification failed")
+    return res
+
+
+@api_router.delete("/retailio/session")
+async def retailio_session_clear():
+    await _rio_manager.clear_session()
+    return {"ok": True}
+
+
 @api_router.post("/products/upload")
 async def products_upload(file: UploadFile = File(...)):
     """Accepts .xlsx or .csv, extracts columns matching Product Name / Pack / Strength / MRP / Manufacturer / Code."""
@@ -1015,6 +1102,19 @@ async def on_startup():
             )
             logger.info(f"Backfilled portalType on {legacy} legacy distributor(s)")
         await seed_if_empty()
+        # Ensure RETAILIO distributor exists (post-seed migration)
+        rio_existing = await db.targets.count_documents({"portalType": "RETAILIO"})
+        if rio_existing == 0:
+            d = Distributor(
+                name="RETAILIO",
+                url="https://order.retailio.in/rio/secure-login",
+                portal="RETAILIO",
+                portalType="RETAILIO",
+                selected=True,
+                hasCredentials=False,
+            )
+            await db.targets.insert_one(d.dict())
+            logger.info("Added RETAILIO distributor")
         asyncio.create_task(_cleanup_old_screenshots())
     except Exception as e:
         logger.error(f"Startup error: {e}")

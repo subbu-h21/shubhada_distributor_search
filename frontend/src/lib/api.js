@@ -87,4 +87,11 @@ export const LiveconnectAPI = {
   clear: () => api.delete('/liveconnect/session').then((r) => r.data),
 };
 
+export const RetailioAPI = {
+  status: () => api.get('/retailio/session').then((r) => r.data),
+  begin: (mobile) => api.post('/retailio/session/begin', { mobile }).then((r) => r.data),
+  verify: (pendingId, otp) => api.post('/retailio/session/verify', { pendingId, otp }).then((r) => r.data),
+  clear: () => api.delete('/retailio/session').then((r) => r.data),
+};
+
 export default api;
