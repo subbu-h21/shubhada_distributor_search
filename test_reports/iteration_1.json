@@ -1,0 +1,42 @@
+{
+  "summary": "Backend regression test suite created for CHETHANA color-stock bug fix. 3/4 tests PASSED. The core bug-fix verification test FAILED: CHIRAG PHARMA extraction returns status=SUCCESS but debug.stockStatus=null (not one of AVAILABLE/INSUFFICIENT/UNAVAILABLE). The results-with-color screenshot IS being written and IS reachable, but shows the Quantity input on chiragpharma.in is EMPTY — meaning the adapter never successfully entered the quantity (or an Enter-triggered postback reset it), so the portal never painted the color indicator.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/extract (CHETHANA / CHIRAG PHARMA)",
+        "issue": "Quantity is NOT being entered on chiragpharma.in userr.aspx form. Screenshot 'results-with-color' clearly shows Quantity=<empty>. Consequently no color-coded stock row paints and debug.stockStatus stays null, item[0].available_qty stays null. Bug reported by user is NOT fixed. Extract still returned status=SUCCESS with detail='Matched: PROLOMET XL 25 MG $' (the fallback branch when stock_label is None).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_chethana_extract.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix /app/backend/adapters/chethana.py extract(): quantity fill is silently failing (wrapped in try/except: pass). The results-with-color screenshot proves the QTY input (#ctl00_ContentPlaceHolder1_txt_quanty) is empty after the fill+Enter sequence.",
+    "Likely root cause 1: pressing Enter triggers an ASP.NET __doPostBack which reloads the form and CLEARS the quantity. Consider triggering the calc some other way (blur/tab, or dispatch a keyup event, or find and call the JS function bound to the field). After the postback the DOM node reference (`q`) may also be stale.",
+    "Likely root cause 2: The qty input might not be enabled until after the autocomplete selection's ASP.NET postback completes. Wait for the description/MRP fields to be populated (e.g. wait until #Txtmrp has a value) BEFORE calling q.fill(). Currently _read_selected does the 2.5s wait, but that runs AFTER the qty step.",
+    "Suggested fix skeleton: (1) after picking a suggestion, wait_for_function `document.getElementById('ctl00_ContentPlaceHolder1_Txtmrp').value !== ''` (2) then re-query QTY_SEL, use page.fill(QTY_SEL, str(qty)); page.dispatch_event(QTY_SEL, 'change'); (3) press Tab (not Enter, to avoid postback), or press Enter but immediately await page.wait_for_load_state('networkidle') and re-query the qty afterwards. (4) Also remove the bare `except: pass` so real errors surface in adapter._last_error.",
+    "Remove the silent `except Exception: pass` around the qty-fill block so the adapter can log why the fill failed."
+  ],
+  "critical_code_review_comments": [
+    "chethana.py extract(): the qty-fill block swallows ALL exceptions silently — makes this bug invisible in logs. Add error logging.",
+    "chethana.py: stale ElementHandle risk — after clicking a suggestion the page does an ASP.NET partial-postback; the previously-queried QTY_SEL handle may be detached. Prefer page.fill(selector, ...) over element.fill().",
+    "server.py _run_one_distributor: OK — screenshot filename convention `{entry_id}_{tid}_{tag}_{hex}.png` correctly satisfies the 'starts with history_id and contains results-with-color' requirement.",
+    "Consider adding a JS-based color-status probe that runs AFTER awaiting `document.querySelector('tr[bgcolor], td[style*=\"background\"]')` becoming visible, with a 5s poll — the 2.5s hard wait may be racing the portal render."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_chethana_extract.py (new)",
+    "/app/test_reports/pytest/pytest_results.xml (new)"
+  ],
+  "success_rate": {"backend": "75% (3/4 tests passed)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "shubhada / 2612 (app JWT)",
+  "seed_data_creation": "None. Used existing CHIRAG PHARMA (CHETHANA), SUNSHOP, LIVECONNECT distributors already seeded in db.targets.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file /app/backend/tests/test_chethana_extract.py hits the live chiragpharma.in portal via /api/extract with product='PROLOMET XL 25', qty=10 against the CHIRAG PHARMA distributor. Requires ~40s per extract call. Run with `-n 0` to disable xdist parallelism. The 'results-with-color' screenshot for the latest failing run is at /app/backend/data/screenshots/fa5be225-...-results-with-color_2dd517.png and visually confirms the Quantity input is empty. Regression tests for SUNSHOP and LIVECONNECT session-status both PASSED.",
+  "rca_of_the_issue": "1) Reproduction: POST /api/extract with {product:'PROLOMET XL 25', quantity:10, target_ids:[<CHIRAG PHARMA id>]}. Response has result.status=SUCCESS but result.debug.stockStatus=null. 2) RCA: Inspecting the resultsScreenshot shows the Quantity input on chiragpharma.in userr.aspx is EMPTY at capture time, so the portal never fires its stock-check colouring — hence the JS probe returns null. The adapter code (adapters/chethana.py lines 257-266) does `await q.click(); await q.fill(str(qty)); await page.keyboard.press('Enter')` but the outer try/except:pass silently swallows any failure. Most probable cause: the click on the autocomplete suggestion triggers an ASP.NET partial postback that (a) re-renders the form and detaches the previously-cached `q` ElementHandle, and/or (b) Enter causes another postback that reloads the form and clears the just-typed qty. 3) Mitigation: after suggestion click, wait for #Txtmrp.value to become non-empty; then use page.fill(QTY_SEL, ...) instead of the stale handle; trigger recompute via `dispatch_event('change')`+Tab rather than Enter; remove the silent except; verify with the same test."
+}

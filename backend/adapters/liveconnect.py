@@ -71,9 +71,11 @@ class LiveconnectAdapter(BaseAdapter):
 
     # ---------- Extract ----------
     async def extract(self, page, url: str, username: str, password: str,
-                      product: str, quantity: int, distributor_name: str = "") -> ExtractionOutcome:
+                      product: str, quantity: int, distributor_name: str = "",
+                      force_candidate_name: Optional[str] = None) -> ExtractionOutcome:
         out = ExtractionOutcome()
         out.requested_qty = quantity or None
+        self._force_candidate = force_candidate_name
 
         if not self.cookies:
             out.status = "LOGIN_FAILED"
@@ -161,6 +163,16 @@ class LiveconnectAdapter(BaseAdapter):
                     best_score, best_el, best_txt = s, r, full
             out.debug["candidates"] = [{"name": n, "score": score(query_canon, n)} for _, _, n in candidates[:10]]
             out.debug["query_canon"] = query_canon
+
+            # Manual pick override
+            forced = getattr(self, "_force_candidate", None)
+            if forced:
+                from .match import canon as _c
+                f_canon = _c(forced)
+                for r, full, name in candidates:
+                    if _c(name) == f_canon or forced.lower() in name.lower():
+                        best_el, best_score, best_txt = r, 55, full
+                        break
 
             if best_el is None or best_score < ACCEPT_THRESHOLD:
                 out.status = "NOT_FOUND"

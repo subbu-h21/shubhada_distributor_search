@@ -147,7 +147,17 @@ const ExtractionModal = ({ open, onOpenChange }) => {
               <ul className="space-y-3">
                 {(entry.results || []).map((r) => (
                   <li key={r.targetId}>
-                    <ResultCard result={r} requestedQty={entry.quantity} />
+                    <ResultCard
+                      result={r}
+                      requestedQty={entry.quantity}
+                      historyId={entry.id}
+                      onUpdate={(nr) => {
+                        setEntry((prev) => prev ? {
+                          ...prev,
+                          results: prev.results.map((x) => x.targetId === nr.targetId ? nr : x),
+                        } : prev);
+                      }}
+                    />
                   </li>
                 ))}
               </ul>

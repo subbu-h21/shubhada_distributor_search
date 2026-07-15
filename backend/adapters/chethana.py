@@ -182,6 +182,16 @@ class ChethanaAdapter(BaseAdapter):
             if s > best_score:
                 best_score, best_el, best_txt = s, el_i, full_txt
 
+        # Manual pick override: force-select the candidate whose name matches
+        forced = getattr(self, "_force_candidate", None)
+        if forced:
+            from .match import canon as _c
+            f_canon = _c(forced)
+            for el_i, full_txt, name_part in candidates:
+                if _c(name_part) == f_canon or forced.lower() in name_part.lower():
+                    best_el, best_score, best_txt = el_i, 55, full_txt
+                    break
+
         if best_el is None or best_score < ACCEPT_THRESHOLD:
             return None
         try:
@@ -214,9 +224,11 @@ class ChethanaAdapter(BaseAdapter):
             return {}
 
     async def extract(self, page, url: str, username: str, password: str,
-                      product: str, quantity: int, distributor_name: str = "") -> ExtractionOutcome:
+                      product: str, quantity: int, distributor_name: str = "",
+                      force_candidate_name: Optional[str] = None) -> ExtractionOutcome:
         out = ExtractionOutcome()
         out.requested_qty = quantity or None
+        self._force_candidate = force_candidate_name
         try:
             ok = await self._login(page, url, username, password)
             out.login_screenshot = await self._screenshot(page, "post-login")
@@ -235,38 +247,83 @@ class ChethanaAdapter(BaseAdapter):
                 out.detail = "No matching product in CHETHANA autocomplete"
                 return out
 
-            # Optional: fill the quantity field so the total updates
-            if quantity:
-                try:
-                    q = await page.query_selector(QTY_SEL)
-                    if q:
-                        await q.click()
-                        await q.fill(str(quantity))
-                        await page.keyboard.press("Tab")
-                        await page.wait_for_timeout(1500)
-                except Exception:
-                    pass
+            # Fill quantity + press Enter — this triggers the portal's stock-check
+            # which paints a colored <tr> next to the row:
+            #   rgb(0,128,0)     = GREEN   → Stock Available
+            #   rgb(255,255,0)   = YELLOW  → Insufficient Stock
+            #   rgb(255,0,0)     = RED     → Stock Unavailable
+            # We always fill qty (default 1 if user didn't specify) so the color
+            # indicator activates.
+            qty_to_fill = quantity if quantity and quantity > 0 else 1
+            try:
+                q = await page.query_selector(QTY_SEL)
+                if q:
+                    await q.click()
+                    await q.fill(str(qty_to_fill))
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(2500)
+            except Exception:
+                pass
+
+            # Read the color-coded stock status
+            stock_status = await page.evaluate("""() => {
+                // Look for a small colored element that is NOT part of the
+                // bottom legend (legend uses class 'style65').
+                const wanted = [
+                    { rgb: 'rgb(0, 128, 0)',   label: 'AVAILABLE' },
+                    { rgb: 'rgb(255, 255, 0)', label: 'INSUFFICIENT' },
+                    { rgb: 'rgb(255, 0, 0)',   label: 'UNAVAILABLE' },
+                ];
+                for (const el of document.querySelectorAll('tr, td')) {
+                    if (!el.offsetParent) continue;
+                    if ((el.className || '').includes('style65')) continue;
+                    const bg = window.getComputedStyle(el).backgroundColor;
+                    const match = wanted.find(w => w.rgb === bg);
+                    if (match) {
+                        return { color: bg, label: match.label };
+                    }
+                }
+                return null;
+            }""")
 
             data = await self._read_selected(page)
-            out.results_screenshot = await self._screenshot(page, "results")
+            # The final screenshot MUST be taken AFTER the color indicator has
+            # painted, so the user can visually confirm stock status.
+            out.results_screenshot = await self._screenshot(page, "results-with-color")
 
+            stock_label = (stock_status or {}).get("label")
             item = ExtractedItem(
                 product=product,
                 matched_name=data.get("desc") or picked_text.split("~", 1)[0].strip(),
                 pack=(picked_text.split("~")[2].strip() if picked_text.count("~") >= 2 else None),
                 mrp=data.get("mrp") or None,
                 ptr=None,  # CHETHANA doesn't expose PTR directly on this form
-                available_qty=None,  # Portal doesn't expose free-stock counter
+                available_qty=("in-stock" if stock_label == "AVAILABLE" else
+                               ("partial" if stock_label == "INSUFFICIENT" else
+                                ("0" if stock_label == "UNAVAILABLE" else None))),
                 scheme=data.get("free") or None,
                 batch=None,
                 expiry=None,
-                raw_row=[picked_text],
+                raw_row=[picked_text, f"stockStatus={stock_label}" if stock_label else ""],
             )
             out.items = [item]
-            out.status = "SUCCESS"
-            out.detail = f"Matched: {item.matched_name}"
-            # can_fulfill unknown — portal accepts orders freely; expose the total instead
-            out.debug = {"code": data.get("code"), "total": data.get("total")}
+            # If stock indicator says UNAVAILABLE, downgrade to NOT_FOUND-with-price
+            if stock_label == "UNAVAILABLE":
+                out.status = "NOT_FOUND"
+                out.detail = f"Stock UNAVAILABLE for {item.matched_name} (MRP {item.mrp})"
+                out.can_fulfill = False
+            elif stock_label == "INSUFFICIENT":
+                out.status = "SUCCESS"
+                out.detail = f"Insufficient stock for qty {qty_to_fill} of {item.matched_name}"
+                out.can_fulfill = False
+            elif stock_label == "AVAILABLE":
+                out.status = "SUCCESS"
+                out.detail = f"Stock AVAILABLE for {item.matched_name}"
+                out.can_fulfill = True
+            else:
+                out.status = "SUCCESS"
+                out.detail = f"Matched: {item.matched_name}"
+            out.debug = {"code": data.get("code"), "total": data.get("total"), "stockStatus": stock_label}
             return out
         except Exception as e:
             out.status = "ERROR"

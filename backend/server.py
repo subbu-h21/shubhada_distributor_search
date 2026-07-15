@@ -484,6 +484,71 @@ async def test_login(tid: str):
             except Exception: pass
 
 
+async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[int], entry_id: str, liveconnect_cookies=None, force_candidate_name: Optional[str] = None) -> Dict[str, Any]:
+    """Run a single distributor extraction and return a result dict (used by
+    both /extract and /extract/manual-pick)."""
+    tid = doc["id"]
+    name = doc["name"]
+    portal = doc.get("portal", "")
+    portal_type = doc.get("portalType") or infer_portal_type(portal)
+    url = doc["url"]
+
+    base = {
+        "targetId": tid,
+        "targetName": name,
+        "portal": portal,
+        "portalType": portal_type,
+        "url": url,
+        "product": product_upper,
+    }
+    empty_result = {"status": "ERROR", "detail": "", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}
+
+    if portal_type == "LIVECONNECT":
+        if not liveconnect_cookies:
+            return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via LIVECONNECT SESSION menu"}}
+        password = None
+    elif not doc.get("username") or not doc.get("encryptedPassword"):
+        return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "Credentials not set. Edit distributor to add username/password."}}
+    else:
+        try:
+            password = decrypt_secret(doc["encryptedPassword"])
+        except Exception as e:
+            return {**base, **{**empty_result, "status": "ERROR", "detail": f"Password decrypt failed: {e}"}}
+
+    async def _shot(page, tag):
+        p = SCREENSHOTS_DIR / f"{entry_id}_{tid}_{tag}_{uuid.uuid4().hex[:6]}.png"
+        try:
+            await page.screenshot(path=str(p), full_page=False)
+            return p.name
+        except Exception:
+            return None
+
+    ctx = None
+    try:
+        ctx = await browser.new_context(
+            viewport={"width": 1366, "height": 900},
+            ignore_https_errors=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-IN",
+            extra_http_headers={
+                "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+        page = await ctx.new_page()
+        adapter = get_adapter(portal_type, liveconnect_cookies=liveconnect_cookies)
+        adapter.screenshotter = _shot
+        outcome = await adapter.extract(page, url, doc.get("username") or "", password or "", product_upper, qty or 0, distributor_name=name, force_candidate_name=force_candidate_name)
+        return {**base, **outcome.to_dict()}
+    except Exception as e:
+        return {**base, **{**empty_result, "status": "ERROR", "detail": f"{e.__class__.__name__}: {e}"}}
+    finally:
+        if ctx:
+            try: await ctx.close()
+            except Exception: pass
+
+
 # ============================================================
 # EXTRACTION (REAL — Playwright + adapters)
 # ============================================================
@@ -518,73 +583,11 @@ async def run_extraction(payload: ExtractRequest):
     try:
         browser = await _get_browser()
 
-        async def run_one(doc):
-            tid = doc["id"]
-            name = doc["name"]
-            portal = doc.get("portal", "")
-            portal_type = doc.get("portalType") or infer_portal_type(portal)
-            url = doc["url"]
-
-            base = {
-                "targetId": tid,
-                "targetName": name,
-                "portal": portal,
-                "portalType": portal_type,
-                "url": url,
-                "product": product_upper,
-            }
-
-            # LIVECONNECT uses a shared session (cookies) instead of per-distributor credentials
-            if portal_type == "LIVECONNECT":
-                if not liveconnect_cookies:
-                    return {**base, **{"status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via LIVECONNECT SESSION menu", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
-                password = None
-            elif not doc.get("username") or not doc.get("encryptedPassword"):
-                return {**base, **{"status": "LOGIN_FAILED", "detail": "Credentials not set. Edit distributor to add username/password.", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
-            else:
-                try:
-                    password = decrypt_secret(doc["encryptedPassword"])
-                except Exception as e:
-                    return {**base, **{"status": "ERROR", "detail": f"Password decrypt failed: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
-
-            async def _shot(page, tag):
-                p = SCREENSHOTS_DIR / f"{entry_id}_{tid}_{tag}_{uuid.uuid4().hex[:6]}.png"
-                try:
-                    await page.screenshot(path=str(p), full_page=False)
-                    return p.name
-                except Exception:
-                    return None
-
-            ctx = None
-            try:
-                ctx = await browser.new_context(
-                    viewport={"width": 1366, "height": 900},
-                    ignore_https_errors=True,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                    locale="en-IN",
-                    extra_http_headers={
-                        "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                )
-                page = await ctx.new_page()
-                adapter = get_adapter(portal_type, liveconnect_cookies=liveconnect_cookies)
-                adapter.screenshotter = _shot
-                outcome = await adapter.extract(page, url, doc.get("username") or "", password or "", product_upper, qty or 0, distributor_name=name)
-                return {**base, **outcome.to_dict()}
-            except Exception as e:
-                return {**base, **{"status": "ERROR", "detail": f"{e.__class__.__name__}: {e}", "items": [], "requestedQty": qty, "canFulfill": None, "loginScreenshot": None, "searchScreenshot": None, "resultsScreenshot": None, "debug": {}}}
-            finally:
-                if ctx:
-                    try: await ctx.close()
-                    except Exception: pass
-
         # Run all distributors in parallel (limit concurrency to 4)
         sem = asyncio.Semaphore(4)
         async def _guarded(d):
             async with sem:
-                return await run_one(d)
+                return await _run_one_distributor(browser, d, product_upper, qty, entry_id, liveconnect_cookies=liveconnect_cookies)
 
         results = await asyncio.gather(*[_guarded(d) for d in docs])
     finally:
@@ -616,6 +619,79 @@ async def run_extraction(payload: ExtractRequest):
     await db.history.insert_one(entry)
     entry.pop("_id", None)
     return entry
+
+
+# ---------- Manual pick: rerun one distributor with a forced candidate ----------
+class ManualPickRequest(BaseModel):
+    history_id: str
+    target_id: str
+    candidate_name: str
+
+
+@api_router.post("/extract/manual-pick")
+async def extract_manual_pick(payload: ManualPickRequest):
+    hist = await db.history.find_one({"id": payload.history_id})
+    if not hist:
+        raise HTTPException(404, "History entry not found")
+    doc = await db.targets.find_one({"id": payload.target_id})
+    if not doc:
+        raise HTTPException(404, "Distributor not found")
+    product_upper = hist["product"]
+    qty = hist.get("quantity")
+
+    liveconnect_cookies = None
+    ptype = doc.get("portalType") or infer_portal_type(doc.get("portal", ""))
+    if ptype == "LIVECONNECT":
+        try:
+            lc_doc = await db.liveconnect_session.find_one({"_id": "default"})
+            liveconnect_cookies = (lc_doc or {}).get("cookies")
+        except Exception:
+            pass
+
+    browser = None
+    try:
+        browser = await _get_browser()
+        new_result = await _run_one_distributor(
+            browser, doc, product_upper, qty, payload.history_id,
+            liveconnect_cookies=liveconnect_cookies,
+            force_candidate_name=payload.candidate_name,
+        )
+    finally:
+        if browser:
+            try: await browser.close()
+            except Exception: pass
+
+    # Merge the new result back into the history entry (replace the old row)
+    updated_results = []
+    replaced = False
+    for r in hist.get("results", []):
+        if r.get("targetId") == payload.target_id:
+            updated_results.append(new_result)
+            replaced = True
+        else:
+            updated_results.append(r)
+    if not replaced:
+        updated_results.append(new_result)
+
+    # Recount tallies
+    success = sum(1 for r in updated_results if r["status"] == "SUCCESS")
+    not_found = sum(1 for r in updated_results if r["status"] == "NOT_FOUND")
+    login_failed = sum(1 for r in updated_results if r["status"] == "LOGIN_FAILED")
+    errors = sum(1 for r in updated_results if r["status"] == "ERROR")
+
+    await db.history.update_one(
+        {"id": payload.history_id},
+        {"$set": {
+            "results": updated_results,
+            "found": success,
+            "notFound": not_found,
+            "loginFailed": login_failed,
+            "errors": errors,
+            "outOfStock": not_found,
+            "status": "COMPLETED" if errors == 0 and login_failed == 0 else "PARTIAL",
+        }},
+    )
+    return {"result": new_result}
 
 
 # ============================================================

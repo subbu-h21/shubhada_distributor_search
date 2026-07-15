@@ -564,6 +564,29 @@ class SunshopAdapter(BaseAdapter):
         self._last_candidate_names = sorted_names[:30]
         self._last_stage_screenshots = stage_screenshots
 
+        # If a MANUAL PICK is forced, override the winner by exact-name lookup.
+        forced = getattr(self, "_force_candidate", None)
+        if forced:
+            # Normalize both sides using canon() for a robust match
+            from .match import canon as _c
+            f_canon = _c(forced)
+            match = None
+            for name, meta in pool.items():
+                if _c(name) == f_canon:
+                    match = (name, meta)
+                    break
+            if match is None:
+                # Fall back to case-insensitive substring
+                for name, meta in pool.items():
+                    if forced.lower() in name.lower():
+                        match = (name, meta)
+                        break
+            if match:
+                best_name = match[0]
+                best_el = match[1]["el"]
+                # Force accept — mark score as 55 (above threshold)
+                best_score = 55
+
         # For the best pick, ensure the search box currently reflects the stage
         # where that candidate was found so the click works.
         if best_el is not None and best_score >= ACCEPT_THRESHOLD:
@@ -695,8 +718,13 @@ class SunshopAdapter(BaseAdapter):
         except Exception as e:
             return False, f"Login error: {e.__class__.__name__}: {e}"
 
-    async def extract(self, page, url, username, password, product, quantity, distributor_name: str = ""):
+    async def extract(self, page, url, username, password, product, quantity, distributor_name: str = "", force_candidate_name: Optional[str] = None):
         outcome = ExtractionOutcome(requested_qty=quantity)
+        # `force_candidate_name` bypasses scoring — the adapter will pick the
+        # autocomplete suggestion whose canonicalized name equals the provided
+        # name. Used by the "Manual pick" UI when the auto-scorer rejects a
+        # SKU that the user believes IS the right variant.
+        self._force_candidate = force_candidate_name
         try:
             # 1. Open login
             await self._open_login(page, url)

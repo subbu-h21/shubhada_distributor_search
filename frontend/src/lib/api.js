@@ -76,6 +76,8 @@ export const ProductsAPI = {
 export const ExtractAPI = {
   run: (product, quantity, targetIds) =>
     api.post('/extract', { product, quantity: quantity ? Number(quantity) : null, target_ids: targetIds }).then((r) => r.data),
+  manualPick: (historyId, targetId, candidateName) =>
+    api.post('/extract/manual-pick', { history_id: historyId, target_id: targetId, candidate_name: candidateName }).then((r) => r.data),
 };
 
 export const LiveconnectAPI = {
