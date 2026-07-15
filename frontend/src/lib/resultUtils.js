@@ -36,6 +36,8 @@ export function explodeResults(results) {
           debug: idx === 0 ? r.debug : {},
           // The manual-pick fallback lives on the aggregator card only.
           canFulfill: null,
+          // Preserve the parent target id so onUpdate merges cleanly.
+          _parentTargetId: r.targetId,
         });
       });
     } else {

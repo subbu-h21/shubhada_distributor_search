@@ -1,6 +1,7 @@
 import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import ResultCard from './ResultCard';
+import ResultFilters from './ResultFilters';
 import { explodeResults } from '../lib/resultUtils';
 
 const HistoryDetail = ({ entry, onClose }) => {
@@ -27,11 +28,15 @@ const HistoryDetail = ({ entry, onClose }) => {
               </div>
 
               {entry.results && entry.results.length > 0 ? (
-                <ul className="space-y-3">
-                  {explodeResults(entry.results).map((r) => (
-                    <li key={r.targetId}><ResultCard result={r} requestedQty={entry.quantity} /></li>
-                  ))}
-                </ul>
+                <ResultFilters results={explodeResults(entry.results)}>
+                  {(shown) => (
+                    <ul className="space-y-3">
+                      {shown.map((r) => (
+                        <li key={r.targetId}><ResultCard result={r} requestedQty={entry.quantity} /></li>
+                      ))}
+                    </ul>
+                  )}
+                </ResultFilters>
               ) : (
                 <div className="border border-dashed border-neutral-300 rounded-sm py-12 text-center">
                   <p className="text-[11px] mono-track-wide text-neutral-500">DETAILED RESULTS NOT ARCHIVED FOR THIS RUN</p>

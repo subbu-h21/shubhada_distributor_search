@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { screenshotUrl } from '../lib/api';
 import ResultCard from './ResultCard';
 import ExtractionProgress from './ExtractionProgress';
+import ResultFilters from './ResultFilters';
 import { explodeResults } from '../lib/resultUtils';
 
 const ExtractionModal = ({ open, onOpenChange }) => {
@@ -132,25 +133,29 @@ const ExtractionModal = ({ open, onOpenChange }) => {
                 <Stat label="TIME" value={entry.duration} />
               </div>
 
-              <ul className="space-y-3">
-                {explodeResults(entry.results || []).map((r) => (
-                  <li key={r.targetId}>
-                    <ResultCard
-                      result={r}
-                      requestedQty={entry.quantity}
-                      historyId={entry.id}
-                      onUpdate={(nr) => {
-                        setEntry((prev) => prev ? {
-                          ...prev,
-                          // Update the underlying (aggregator) row — the
-                          // explode helper will re-expand on next render.
-                          results: prev.results.map((x) => x.targetId === (nr._parentTargetId || nr.targetId) ? nr : x),
-                        } : prev);
-                      }}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <ResultFilters results={explodeResults(entry.results || [])}>
+                {(shown) => (
+                  <ul className="space-y-3">
+                    {shown.map((r) => (
+                      <li key={r.targetId}>
+                        <ResultCard
+                          result={r}
+                          requestedQty={entry.quantity}
+                          historyId={entry.id}
+                          onUpdate={(nr) => {
+                            setEntry((prev) => prev ? {
+                              ...prev,
+                              // Update the underlying (aggregator) row — the
+                              // explode helper will re-expand on next render.
+                              results: prev.results.map((x) => x.targetId === (nr._parentTargetId || nr.targetId) ? nr : x),
+                            } : prev);
+                          }}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </ResultFilters>
 
               <div className="mt-5 grid grid-cols-2 gap-2">
                 <button onClick={copyJson} className="h-11 border border-neutral-300 hover:border-emerald-600 rounded-sm flex items-center justify-center gap-2 text-[11px] mono-track-wide font-semibold press">
