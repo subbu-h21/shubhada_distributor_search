@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { CheckCircle2, XCircle, AlertOctagon, KeyRound, ChevronDown, ChevronUp, Image as ImageIcon, ExternalLink, MousePointerClick, Loader2 } from 'lucide-react';
+import { CheckCircle2, XCircle, AlertOctagon, KeyRound, ChevronDown, ChevronUp, Image as ImageIcon, ExternalLink, MousePointerClick, Loader2, ShoppingCart } from 'lucide-react';
 import { screenshotUrl, ExtractAPI } from '../lib/api';
+import AddToOrderSheet from './AddToOrderSheet';
 import { toast } from 'sonner';
 
 const STATUS_META = {
@@ -19,8 +20,20 @@ const ResultCard = ({ result: initialResult, requestedQty, historyId, onUpdate }
   const [result, setResult] = useState(initialResult);
   const [showShots, setShowShots] = useState(false);
   const [picking, setPicking] = useState(null); // candidate name currently being force-picked
+  const [addOpen, setAddOpen] = useState(false);
   const meta = STATUS_META[result.status] || STATUS_META.ERROR;
   const { Icon } = meta;
+
+  // The first item (post-explode there's exactly one seller per card)
+  const firstItem = (result.items || [])[0] || {};
+  // Can add to order if we matched something in-stock (or partial)
+  const canAddToOrder = result.status === 'SUCCESS' && firstItem.matched_name;
+  // Supplier defaults: use seller if exploded, else the target name (SUNSHOP/CHETHANA row)
+  const orderDefaults = {
+    product: firstItem.matched_name || result.product,
+    supplier: firstItem.seller || (result.targetName || '').split(' — ')[0] || '',
+    qty: requestedQty || 1,
+  };
 
   const candidates = (result.debug && result.debug.candidates) || [];
   const normCandidates = Array.isArray(candidates) && candidates.length > 0 && typeof candidates[0] === 'object'
@@ -78,6 +91,18 @@ const ResultCard = ({ result: initialResult, requestedQty, historyId, onUpdate }
             <div className="mt-1 text-[11px] mono-track-tight text-neutral-500">{result.detail}</div>
           )}
         </div>
+        {canAddToOrder && (
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            data-testid="add-to-order-btn"
+            className="shrink-0 h-8 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm text-[10px] mono-track-wide font-bold flex items-center gap-1 press"
+            title="Place this seller's PO on Shubhada Pharma"
+          >
+            <ShoppingCart className="w-3.5 h-3.5" />
+            ADD TO ORDER
+          </button>
+        )}
       </div>
 
       {/* Items table */}
@@ -178,6 +203,8 @@ const ResultCard = ({ result: initialResult, requestedQty, historyId, onUpdate }
           )}
         </div>
       )}
+
+      <AddToOrderSheet open={addOpen} onOpenChange={setAddOpen} defaults={orderDefaults} />
     </div>
   );
 };

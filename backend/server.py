@@ -951,6 +951,40 @@ async def retailio_session_clear():
     return {"ok": True}
 
 
+# ============================================================
+# Shubhada Pharma — PO placement automation
+# ============================================================
+from shubhada_po import place_order as _sh_place_order  # noqa: E402
+
+
+class OrderPlaceRequest(BaseModel):
+    product: str
+    supplier: Optional[str] = ""
+    qty: int
+    mobile: Optional[str] = ""
+    patient: str
+    advance: Optional[float] = 0
+
+
+@api_router.post("/order/place")
+async def order_place(payload: OrderPlaceRequest):
+    if not payload.product or not payload.patient or not payload.qty:
+        raise HTTPException(400, "product, patient and qty are required")
+    res = await _sh_place_order(
+        _get_browser,
+        product=payload.product,
+        supplier=(payload.supplier or "").strip(),
+        qty=int(payload.qty),
+        mobile=(payload.mobile or "").strip(),
+        patient=payload.patient.strip(),
+        advance=float(payload.advance or 0),
+    )
+    if not res.get("ok"):
+        # Return the screenshots + steps so the user can see where it broke
+        raise HTTPException(400, {"error": res.get("error"), "screenshots": res.get("screenshots"), "steps": res.get("steps")})
+    return res
+
+
 @api_router.post("/products/upload")
 async def products_upload(file: UploadFile = File(...)):
     """Accepts .xlsx or .csv, extracts columns matching Product Name / Pack / Strength / MRP / Manufacturer / Code."""

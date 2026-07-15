@@ -94,4 +94,8 @@ export const RetailioAPI = {
   clear: () => api.delete('/retailio/session').then((r) => r.data),
 };
 
+export const OrderAPI = {
+  place: (payload) => api.post('/order/place', payload).then((r) => r.data),
+};
+
 export default api;
