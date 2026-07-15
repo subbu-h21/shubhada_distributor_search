@@ -26,10 +26,11 @@ with screenshots.
 | Portal | Status | Fields returned |
 |--------|--------|------------------|
 | SUNSHOP (SAROJ, HEGDE, KAPILA PHARMA, KAPILA MEDICAL) | ✅ Live | Product, Pack, Stock |
-| CHETHANA (CHIRAG PHARMA / chiragpharma.in) | ✅ Live | Code, Product, Pack, MRP |
+| CHETHANA (CHIRAG PHARMA, CHETHANA PHARMA / chethanapharma.in) | ✅ Live | Code, Product, Pack, MRP |
 | LIVECONNECT (8 sellers via search-all-sellers) | ✅ Live | Seller, Product, Mfr, Pack, MRP, PTR, Stock, Scheme, Tax |
 | VARDHAMAN Shimoga (`fgtsmg.fortiddns.com:83`) | ⚠️ IP-blocked from container (port 83 refuses non-Indian IPs) |
-| RETAILIO (order.retailio.in) | ✅ Live | Product, Pack, Stock, MRP, PTR, Scheme (OTP-based session) |
+| RETAILIO (order.retailio.in) | ✅ Live | Seller, Product, Pack, MRP, PTR, Scheme, Stock (OTP-based session, drills into detail view) |
+| YASHIKA AGENCIES HUBLI (yashikaagencies.in) | ✅ Live | Product, Mfr, Pack, Scheme, MRP, PTR, Expiry, Stock (customer-id login) |
 
 ## Key Files
 - `/app/backend/server.py` — API routes (needs future split into `routes/`).

@@ -163,6 +163,8 @@ def infer_portal_type(portal: str) -> str:
         return "VARDHAMAN"
     if "RETAILIO" in p:
         return "RETAILIO"
+    if "YASHIKA" in p:
+        return "YASHIKA"
     return "GENERIC"
 
 
@@ -1116,6 +1118,35 @@ async def on_startup():
             )
             await db.targets.insert_one(d.dict())
             logger.info("Added RETAILIO distributor")
+        # Ensure YASHIKA AGENCIES distributor exists with default customer creds
+        yashika_existing = await db.targets.count_documents({"portalType": "YASHIKA"})
+        if yashika_existing == 0:
+            d = Distributor(
+                name="YASHIKA AGENCIES HUBLI",
+                url="https://www.yashikaagencies.in",
+                portal="YASHIKA",
+                portalType="YASHIKA",
+                location="Hubballi",
+                username="1005173682",
+                selected=True,
+                hasCredentials=True,
+            )
+            to_store = d.dict()
+            to_store["encryptedPassword"] = encrypt_secret("1005173682")
+            await db.targets.insert_one(to_store)
+            logger.info("Added YASHIKA AGENCIES HUBLI distributor")
+        # Fix CHETHANA PHARMA — it lives on chethanapharma.in but was
+        # registered with SUNSHOP portalType. Use the CHETHANA adapter
+        # (same as Chirag Pharma). Idempotent.
+        try:
+            fixed = await db.targets.update_many(
+                {"name": {"$regex": "^chethana pharma$", "$options": "i"}, "portalType": {"$ne": "CHETHANA"}},
+                {"$set": {"portalType": "CHETHANA", "portal": "CHETHANA", "url": "http://www.chethanapharma.in"}},
+            )
+            if fixed.modified_count:
+                logger.info(f"Repointed CHETHANA PHARMA to CHETHANA adapter ({fixed.modified_count} row)")
+        except Exception as e:
+            logger.warning(f"CHETHANA PHARMA migration skipped: {e}")
         asyncio.create_task(_cleanup_old_screenshots())
     except Exception as e:
         logger.error(f"Startup error: {e}")
