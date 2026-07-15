@@ -928,7 +928,8 @@ async def retailio_session_begin(payload: RioBeginRequest):
         raise HTTPException(400, "Enter a valid 10-digit mobile number")
     res = await _rio_manager.begin(mob)
     if not res.get("ok"):
-        raise HTTPException(400, res.get("error") or "Could not send OTP")
+        # Preserve diagnostic screenshot names on failure
+        raise HTTPException(400, {"error": res.get("error") or "Could not send OTP", "diag": res.get("diag", [])})
     return res
 
 

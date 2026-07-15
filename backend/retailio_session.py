@@ -81,34 +81,151 @@ class RetailioSessionManager:
             ignore_https_errors=True,
         )
         page = await ctx.new_page()
+        # Diagnostic screenshots — saved under backend/data/screenshots so we
+        # can inspect them via the /api/screenshots/{name} endpoint.
+        import os as _os
+        from pathlib import Path as _Path
+        _shot_dir = _Path(_os.environ.get("SCREENSHOTS_DIR", str(_Path(__file__).parent / "data/screenshots")))
+        _shot_dir.mkdir(parents=True, exist_ok=True)
+        _shots: list[str] = []
+        async def _diag(tag: str):
+            try:
+                name = f"rio_{tag}_{uuid.uuid4().hex[:6]}.png"
+                await page.screenshot(path=str(_shot_dir / name), full_page=False)
+                _shots.append(name)
+            except Exception:
+                pass
         try:
             await page.goto(LOGIN_URL, timeout=45000, wait_until="domcontentloaded")
             await page.wait_for_timeout(2500)
+            await _diag("01_open")
 
             # 1) Fill mobile number
             inp = await page.query_selector("input.input-fields, input[placeholder*='Mobile' i], input[placeholder*='Email' i]")
             if not inp:
                 await ctx.close()
-                return {"ok": False, "error": "Login mobile field not found on retailio.in"}
+                return {"ok": False, "error": "Login mobile field not found on retailio.in", "diag": _shots}
             await inp.fill(mobile)
+            await page.wait_for_timeout(300)
 
-            # 2) Tick the terms checkbox (id may be checkbox--checkbox-login)
-            for sel in ("#checkbox--checkbox-login", "input[type='checkbox']"):
+            # 1b) Retailio requires selecting "I'm a Retailer" (radio-style
+            # chip) to enable Continue. Use Playwright's text locator which
+            # is the most reliable way to click custom radios/chips.
+            picked_retailer = False
+            for loc_expr in ("text=/I['\u2019]?m a Retailer/i", "text=I'm a Retailer", 'text="I\'m a Retailer"'):
                 try:
-                    cb = await page.query_selector(sel)
-                    if cb and not await cb.is_checked():
-                        try:
-                            await cb.check(force=True)
-                        except Exception:
-                            # Click the associated label instead
-                            await page.evaluate("(id) => { const cb = document.getElementById(id); if (cb) cb.click(); }", sel.lstrip("#"))
-                        break
+                    loc = page.locator(loc_expr).first
+                    await loc.click(timeout=2500)
+                    picked_retailer = True
+                    break
                 except Exception:
                     continue
+            logger.info(f"Retailio: picked_retailer={picked_retailer}")
+            await page.wait_for_timeout(500)
 
-            # 3) Click Continue
-            await page.click("button:has-text('Continue'), button[type='submit']")
+            # 2) Tick the terms / agree checkbox. Multiple strategies.
+            # IMPORTANT: this is IDEMPOTENT — it only toggles when unchecked.
+            async def _is_terms_checked():
+                try:
+                    return bool(await page.evaluate("""() => {
+                        for (const cb of document.querySelectorAll('input[type=checkbox]')) {
+                            if (cb.offsetParent && cb.checked) return true;
+                        }
+                        return false;
+                    }"""))
+                except Exception:
+                    return False
+
+            async def _tick_terms():
+                if await _is_terms_checked():
+                    return True
+                # a) Native setter: forces state without toggling.
+                try:
+                    changed = await page.evaluate("""() => {
+                        const boxes = Array.from(document.querySelectorAll('input[type=checkbox]'));
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked').set;
+                        for (const cb of boxes) {
+                            if (!cb.offsetParent) continue;
+                            if (!cb.checked) {
+                                setter.call(cb, true);
+                                cb.dispatchEvent(new Event('input', {bubbles: true}));
+                                cb.dispatchEvent(new Event('change', {bubbles: true}));
+                                cb.dispatchEvent(new Event('click', {bubbles: true}));
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""")
+                    if changed and await _is_terms_checked():
+                        return True
+                except Exception:
+                    pass
+                # b) Fallback — click label with agree text (only if still unchecked)
+                if not await _is_terms_checked():
+                    try:
+                        await page.evaluate("""() => {
+                            const rx = /agree|terms|condition/i;
+                            for (const l of document.querySelectorAll('label, p, span, div')) {
+                                if (!l.offsetParent) continue;
+                                const t = (l.innerText || '').trim();
+                                if (t.length > 200 || t.length < 8) continue;
+                                if (rx.test(t)) {
+                                    const cb = l.querySelector('input[type=checkbox]');
+                                    if (cb && !cb.checked) { l.click(); return; }
+                                }
+                            }
+                        }""")
+                    except Exception:
+                        pass
+                return await _is_terms_checked()
+
+            await _tick_terms()
+            await _diag("02_after_tick")
+            await page.wait_for_timeout(500)
+
+            # 3) Wait for Continue to become enabled — poll up to 6s.
+            # Only re-tick when actually unchecked (idempotent, no toggling).
+            enabled = False
+            for _ in range(24):
+                try:
+                    is_disabled = await page.evaluate("""() => {
+                        for (const b of document.querySelectorAll('button')) {
+                            if (!b.offsetParent) continue;
+                            const t = (b.innerText || b.textContent || '').trim();
+                            if (/continue|proceed|next|submit/i.test(t)) return b.disabled;
+                        }
+                        return true;
+                    }""")
+                    if not is_disabled:
+                        enabled = True
+                        break
+                except Exception:
+                    pass
+                if not await _is_terms_checked():
+                    await _tick_terms()
+                await page.wait_for_timeout(250)
+
+            if not enabled:
+                # Diagnostic: dump body for logs
+                try:
+                    body = (await page.inner_text("body"))[:400]
+                    logger.warning(f"Retailio Continue stayed disabled. body={body[:200]}")
+                except Exception:
+                    pass
+
+            # 4) Click Continue
+            try:
+                await page.evaluate("""() => {
+                    for (const b of document.querySelectorAll('button')) {
+                        if (!b.offsetParent) continue;
+                        const t = (b.innerText || '').trim();
+                        if (/continue|proceed|next|submit/i.test(t) && !b.disabled) { b.click(); return; }
+                    }
+                }""")
+            except Exception:
+                pass
             await page.wait_for_timeout(4500)
+            await _diag("03_after_continue")
 
             # 4) Select "I am a retailer" if a role picker is presented
             try:
@@ -145,6 +262,7 @@ class RetailioSessionManager:
                 await page.wait_for_timeout(4000)
             except Exception:
                 pass
+            await _diag("04_after_role")
 
             # 6) Wait for OTP entry. It may be a single input or 4-6 boxes.
             otp_found = await page.evaluate("""() => {
@@ -164,8 +282,9 @@ class RetailioSessionManager:
             }""")
             if not otp_found:
                 # Snap a diagnostic screenshot before failing
+                await _diag("05_no_otp")
                 await ctx.close()
-                return {"ok": False, "error": "OTP screen didn't appear after Continue + retailer selection. Please share a screenshot of what you see."}
+                return {"ok": False, "error": "OTP screen didn't appear after Continue + retailer selection.", "diag": _shots}
         except Exception as e:
             try: await ctx.close()
             except Exception: pass
