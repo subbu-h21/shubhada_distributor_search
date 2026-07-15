@@ -96,6 +96,20 @@ export const RetailioAPI = {
 
 export const OrderAPI = {
   place: (payload) => api.post('/order/place', payload).then((r) => r.data),
+  status: (taskId) => api.get(`/order/status/${taskId}`).then((r) => r.data),
+  // Convenience helper: submit + poll until 'done' or timeout, then return
+  // the final result. onProgress?: (secondsElapsed) => void
+  placeAndWait: async (payload, { pollMs = 3000, timeoutMs = 240000, onProgress } = {}) => {
+    const start = Date.now();
+    const { task_id: taskId } = await OrderAPI.place(payload);
+    while (true) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const s = await OrderAPI.status(taskId);
+      if (onProgress) onProgress(Math.round((Date.now() - start) / 1000));
+      if (s.status === 'done') return s;
+      if (Date.now() - start > timeoutMs) throw new Error('Order placement timed out');
+    }
+  },
 };
 
 export default api;

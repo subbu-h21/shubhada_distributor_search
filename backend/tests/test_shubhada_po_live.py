@@ -12,7 +12,7 @@ from server import _get_browser
 async def main():
     res = await place_order(
         _get_browser,
-        product="PANTOP 40",
+        product="ROSUVAS F 10",
         supplier="SAROJ",
         qty=2,
         mobile="9123456789",

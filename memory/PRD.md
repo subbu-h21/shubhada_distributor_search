@@ -57,26 +57,40 @@ with screenshots.
   - Word-by-word typing into portal autocompletes.
   - **Built CHETHANA adapter** (`chiragpharma.in`). Extracts Code, Product, Pack, MRP.
   - **Built LIVECONNECT adapter** with OTP session manager. One search → 8 sellers with Stock/MRP/PTR/Scheme.
-    - New API endpoints: `POST /api/liveconnect/session/begin`, `/verify`, `GET /session`, `DELETE /session`.
-    - New UI: LIVECONNECT SESSION item in user-avatar dropdown.
-  - Added `seller` and `manufacturer` fields to `ExtractedItem`; CSV + ResultCard show them.
-  - **Smart-prefix SUNSHOP search**: type first 4 chars → collect suggestions → canonical-score → click best. Progressive lengthening (4→5→6→…→full) and fallback to shorter (3, 2). Massive accuracy improvement — SAROJ, HEGDE now return SUCCESS where they returned NOT_FOUND. When genuinely not stocked, response lists the distributor's *nearest* SKUs.
-  - **VARDHAMAN adapter** (`easysol.co.in` → `fgtsmg.fortiddns.com:83`). Login via redirect; word-by-word typing into item search; intercepts `/GetItems` JSON (pipe-separated `id|name|pack|Avl|scheme|code|rate`); parses "Avl" as availability. Includes multi-stage screenshots + Manual Pick support.
-  - **CHETHANA color-status extraction** — Now polls up to 5s for the colored `<tr>` after direct JS `el.value + dispatchEvent(input/change/keyup/blur)`. Green/Yellow/Red maps to AVAILABLE/INSUFFICIENT/UNAVAILABLE. Final screenshot captured AFTER the color paints. Verified by testing agent iteration 3 (100% pass).
-  - **Distributor `location` field** — Every distributor now carries a city label (Sirsi, Hubli, Belagavi, Shivamogga, Bangalore, Udupi, Mangalore, Davangere, Chitradurga, Karnataka…). Groups the roster by city in the extraction UI.
-  - **Anjaneya-Sanjeevini extraction progress overlay** — During extraction the UI shows an emerald banner with an inline-SVG Anjaneya-carrying-Sanjeevini illustration, tagline "Just as Anjaneya carried the entire Sanjeevini parvat to save Lakshmana, we are pulling every distributor's stock at once…", a progress bar, and a city-grouped roster with per-distributor live status (spinner → SUCCESS/NOT_FOUND/etc.).
-  - **Manual Pick UI** — On NOT_FOUND result rows, the frontend now displays each candidate SKU (from `debug.candidates`) as a clickable pill. Tapping a pill calls `POST /api/extract/manual-pick { history_id, target_id, candidate_name }`, which re-runs *just* that distributor with `force_candidate_name` set. The Sunshop/Chethana/Liveconnect/Vardhaman adapters skip their scorer and select the matching suggestion by canonical name. The history entry is updated in DB; the ResultCard swaps to SUCCESS in-place.
-  - **Multi-stage screenshotting during search** (SUNSHOP): Types in escalating stages — `PROL` → `PROLOMET` → `PROLOMET XL` → `PROLOMET XL 25`. Captures a screenshot per stage AND accumulates candidates in a unique-name pool. After all stages, picks the highest-scoring unique suggestion across the union of all stages. UI shows all 4 stage screenshots so the pharmacist can audit exactly what the distributor's autocomplete offered at each typing depth.
-  - **Combo-drug intelligence**: `X/Y`, `X-Y`, and `X Y` (two consecutive dosage numbers) are now canonicalized to a single `X/Y` token, and a query of `X` matches a candidate of `X/Y` as a combo variant (score 45). Handles:
-    - `ECOSPRIN AV 75` ≡ `ECOSPRIN AV 75/10` ≡ `ECOSPRIN AV 75 10` ≡ `ECOSPRIN AV 75-10` ≡ `ECOSPRIN AV 75 CAPSULES` (all match). Different primary strength (`75` vs `150`) still fails.
-    - `TELMIKIND AM 40` matches `TELMIKIND AM 40/5`, does NOT match `TELMIKIND AM 80`.
+  - Added `seller` and `manufacturer` fields; CSV + ResultCard show them.
+  - **Smart-prefix SUNSHOP search**.
+  - **VARDHAMAN adapter** (`easysol.co.in` → `fgtsmg.fortiddns.com:83`).
+  - **CHETHANA color-status extraction** — Poll for colored `<tr>`. Verified by testing agent iteration 3 (100% pass).
+  - **Distributor `location` field**, city-grouped roster.
+  - **Anjaneya-Sanjeevini extraction progress overlay**.
+  - **Manual Pick UI** — clickable candidate pills → `POST /api/extract/manual-pick`.
+  - **Multi-stage screenshotting during search** (SUNSHOP).
+  - **Combo-drug intelligence**: `X/Y`, `X-Y`, and `X Y` unified.
+- **2026-07-15 (this session)**:
+  - **Shubhada Auto-PO Placement (`/api/order/place`) — END-TO-END WORKING**. Playwright automates the full purchase-order flow on `https://shubhadahealth.com:7007`:
+    1. Login `9448188002/Q` → Re-Ordering Process tile.
+    2. Clicks the **"Add New Medicine"** link (NOT the top #srch_prd Order Entry search) — opens empty Order Details dialog.
+    3. Types product into the dialog's own `Product` input (name=`sprd`).
+    4. Types **first 4 letters** of the supplier into Stockist/Supplier → mat-autocomplete → picks the matching option.
+    5. Sets Enter Suggested Qty (force-enables the disabled input).
+    6. Expands the Patient Details `mat-expansion-panel-header` (by `aria-expanded` check, retries).
+    7. Fills Patient Mobile (name=`mob`) → auto-search picks existing patient if match.
+    8. Fills Patient Name (name=`pat`) — force-enabled, keyboard-typed for autocomplete, JS-forced if no match.
+    9. Fills Quantity (name=`qty`) and Advance Payment (name=`payment`).
+    10. Clicks **Add To PO**.
+    11. Handles the "**No Patient Found — Created Account / Leave it**" warning by clicking **Created Account** (regex `created?\s*account`).
+  - **Async task pattern** (`POST /api/order/place` returns `{task_id}` immediately; frontend polls `GET /api/order/status/{task_id}`) — bypasses Cloudflare's ~100s edge timeout. Verified via curl end-to-end (75s completion).
+  - **Frontend**: `OrderAPI.placeAndWait()` helper does submit + poll with elapsed-time indicator. `AddToOrderSheet.jsx` shows `PLACING ORDER… (Ns)` while polling.
+  - Verified visually: ROSUVAS F 10 / NEUROBION FORTE / DOLO 650 all landed on the Saved PO table with supplier SAROJ PHARMA and qty 2 / advance 25.
 
 ## Pending / Next Tasks
-- 🔴 **P0** — VARDHAMAN Shimoga is IP-blocked from our overseas container. Options: (a) whitelist container IP with VARDHAMAN admin, (b) route through an Indian proxy, (c) skip.
-- 🟠 **P1** — Add remaining LIVECONNECT sellers if any (currently 8 auto-discovered from `stkchem-new` endpoint).
-- 🟠 **P2** — SUNSHOP: extract MRP / PTR / Scheme / Batch / Expiry (currently only Stock). Requires user to identify the SUNSHOP menu that exposes these fields.
-- 🔵 **P3** — PDF export of combined results.
-- 🧹 Refactor `server.py` (~950 lines) into `routes/auth.py`, `routes/scraping.py`, `routes/products.py`, `routes/liveconnect.py`.
+- 🟠 **P1** — Refactor `server.py` (~1250 lines) into `routes/auth.py`, `routes/scraping.py`, `routes/orders.py`, `routes/sessions.py`.
+- 🔵 **P2** — SUNSHOP: extract MRP / PTR / Scheme / Batch / Expiry (currently only Stock). Requires user to share screenshots of the SUNSHOP menu that exposes these fields.
+- 🔵 **P3** — PDF export of combined results (multi-seller layout).
+- 🔵 **P4** — Share-on-WhatsApp button.
+- 🔵 **P5** — Best-price finder (auto-highlight seller with lowest PTR).
+- 🔵 **P6** — Persist filter chip prefs in localStorage.
+- 🔴 **P0 (env)** — VARDHAMAN Shimoga IP-blocked from container. Options: whitelist container IP, use Indian proxy, or skip.
 
 ## Known Recurring Issues
 - Playwright Chromium binary previously wiped from `/pw-browsers/` on container resets. FIXED — moved to persistent `/app/.pw-browsers/`.
@@ -94,6 +108,8 @@ with screenshots.
 - `DELETE /api/liveconnect/session` — clear cookies
 - `GET  /api/screenshots/{filename}` — no auth
 - `GET  /api/history`, `GET /api/history/{id}`, `DELETE /api/history/{id}`
+- `POST /api/order/place` — start Shubhada PO placement, returns `{task_id, status:"running"}` (async).
+- `GET  /api/order/status/{task_id}` — poll for `{status:"done", ok, screenshots, steps}`.
 
 ## Testing
 - Backend: end-to-end curl tests passed for SUNSHOP, CHETHANA, LIVECONNECT (this session).

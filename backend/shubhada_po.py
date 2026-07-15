@@ -5,21 +5,22 @@ Endpoint: /api/order/place (see server.py)
 Flow (per user spec):
   1. Login to https://shubhadahealth.com:7007 as `9448188002 / Q`.
   2. Click "Re-Ordering Process" tile → search screen.
-  3. Click the "Add New Medicine" link at the top of the reorder page —
-     this opens the fresh Order Details dialog.
-  4. In the dialog's Product field, type the product name and pick the
-     matching autocomplete option.
-  5. In the Supplier field, type the FIRST 4 LETTERS of the distributor
-     name. A dropdown appears → pick the option matching the passed-in
-     supplier.
+  3. Click the "Add New Medicine" link — this opens a fresh, EMPTY Order
+     Details dialog. NEVER type into the top #srch_prd bar (which is the
+     Order Entry area, not our target).
+  4. Type the product name into the DIALOG's own 'Product' input (empty
+     input with placeholder='Product'), then click the matching autocomplete
+     option.
+  5. In the Stockist/Supplier field, type the FIRST 4 LETTERS of the
+     distributor name. A dropdown appears → pick the matching option.
   6. Expand the "Patient Details" section.
-  7. Type patient name → if an auto-suggest option appears, click it;
-     otherwise keep the typed value.
-  8. Enter qty into "Quantity" and advance into "Advance Payment".
-  9. Click "Add to PO".
- 10. If this is a new patient, a warning box appears with a "Create Account"
+  7. Fill Patient Mobile, Patient Name (auto-suggest picks existing patient
+     if matched, otherwise the typed name is retained), Quantity, and
+     Advance Payment.
+  8. Click "Add to PO".
+  9. If this is a new patient, a warning box appears with a "Create Account"
      button → click it to confirm.
- 11. Return success back to caller with screenshots + step log.
+ 10. Return success back to caller with screenshots + step log.
 
 Selectors are Angular Material; failures are surfaced as `{ok:false, error,
 screenshots, steps}` for debugging.
@@ -279,58 +280,96 @@ async def place_order(
         steps.append(f"reorder-page url={page.url}")
         shots.append(await _shot(page, "reorder-page") or "")
 
-        # 3. Click "Add New Medicine" link then type into the product
-        # search bar. Clicking "Add New Medicine" simply focuses / anchors
-        # the product-search section; the actual product input is #srch_prd.
+        # 3. Click "Add New Medicine" link → opens the Order Details dialog
+        # with EMPTY fields. THIS IS THE ONLY WAY IN — DO NOT type into the
+        # top #srch_prd bar (which is the Order Entry area, not what we want).
+        clicked_new = False
         try:
-            await page.evaluate(
+            # Prefer clicking the exact <a> anchor. Only fall back to other
+            # tags if none is found.
+            clicked_new = await page.evaluate(
                 """() => {
-                    for (const el of document.querySelectorAll('a, button, span, div')) {
+                    // Try anchors first
+                    for (const a of document.querySelectorAll('a')) {
+                        if (!a.offsetParent) continue;
+                        const t = (a.innerText || a.textContent || '').trim().toLowerCase();
+                        if (t === 'add new medicine') { a.click(); return 'a-exact'; }
+                    }
+                    for (const a of document.querySelectorAll('a')) {
+                        if (!a.offsetParent) continue;
+                        const t = (a.innerText || a.textContent || '').trim().toLowerCase();
+                        if (t.startsWith('add new medicine')) { a.click(); return 'a-startsWith'; }
+                    }
+                    // Fallback: any element with EXACT text (no children with same text)
+                    for (const el of document.querySelectorAll('button, span')) {
                         if (!el.offsetParent) continue;
-                        const t = (el.innerText || '').trim().toLowerCase();
-                        if (t === 'add new medicine' || t.startsWith('add new medicine')) { el.click(); return true; }
+                        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        if (t === 'add new medicine') { el.click(); return 'other-exact'; }
                     }
                     return false;
                 }"""
             )
-            await page.wait_for_timeout(1000)
-            steps.append("add-new-medicine-clicked")
+            steps.append(f"add-new-medicine-clicked={clicked_new}")
         except Exception as e:
             steps.append(f"add-new-medicine-click-error: {e}")
 
-        # 4. Product search — type into #srch_prd and pick first autocomplete
-        srch = await page.query_selector("#srch_prd")
-        if not srch:
-            shots.append(await _shot(page, "no-search-input") or "")
-            return {"ok": False, "error": "Product search input (#srch_prd) not found", "screenshots": shots, "steps": steps}
-        await srch.click()
-        try: await srch.fill("")
-        except Exception: pass
-        await srch.type(product, delay=90)
-        await page.wait_for_timeout(3000)
+        if not clicked_new:
+            shots.append(await _shot(page, "no-add-new-medicine") or "")
+            return {"ok": False, "error": "'Add New Medicine' link not found on reorder page", "screenshots": shots, "steps": steps}
+
+        # Wait for the Order Details dialog to fully render — the empty
+        # 'Product' input is our sentinel.
+        try:
+            await page.wait_for_function(
+                """() => {
+                    for (const el of document.querySelectorAll('input')) {
+                        if (!el.offsetParent) continue;
+                        if ((el.placeholder||'').trim() === 'Product' && !el.readOnly && !el.disabled) return true;
+                    }
+                    return false;
+                }""",
+                timeout=8000,
+            )
+            steps.append("add-new-dialog-visible")
+        except Exception:
+            steps.append("add-new-dialog-timeout")
+        shots.append(await _shot(page, "add-new-dialog") or "")
+
+        # 4. Product — type into the dialog's 'Product' input (placeholder
+        # 'Product', name='sprd'). This field has NO mat-autocomplete
+        # attached; the shubhada backend recognises the product from the
+        # typed text alone. Just enter the value.
+        try:
+            prod_loc = page.locator('input[placeholder="Product"]').first
+            await prod_loc.wait_for(state="visible", timeout=5000)
+            await prod_loc.click()
+            await page.wait_for_timeout(500)
+            await prod_loc.press_sequentially(product, delay=140)
+            steps.append("product-typed-in-dialog")
+        except Exception as e:
+            shots.append(await _shot(page, "no-product-input") or "")
+            return {"ok": False, "error": f"Product input not usable: {e}", "screenshots": shots, "steps": steps}
+        await page.wait_for_timeout(2500)
         shots.append(await _shot(page, "product-typed") or "")
 
-        try:
-            await page.locator("mat-option, li[role=option]").first.click(timeout=5000)
-        except Exception as e:
-            shots.append(await _shot(page, "no-product-autocomplete") or "")
-            return {"ok": False, "error": f"No autocomplete option matched product '{product}': {e}", "screenshots": shots, "steps": steps}
-        steps.append("product-suggestion-clicked")
-        await page.wait_for_timeout(3000)
+        # If a mat-autocomplete panel DOES surface (some product forms do
+        # attach one dynamically), click the best-matching option. If none,
+        # continue with the free-text value already in the field.
+        picked_prod = await _click_mat_option_matching(page, product, timeout_ms=2500, require_match=True)
+        steps.append(f"product-autocomplete-picked={picked_prod}")
+        await page.wait_for_timeout(1500)
 
         # 4b. Handle potential "WARNING - Already Added" popup by clicking Ok.
-        # If the Order Details dialog is no longer present afterwards, treat
-        # as success (product already on PO).
         warn_dismissed = await _click_button_matching(page, r"^\s*ok\s*$", in_dialog=False)
         if warn_dismissed:
             steps.append("already-added-warning-dismissed")
             await page.wait_for_timeout(1500)
             still_open = await page.evaluate(
                 """() => {
-                    const dialogs = document.querySelectorAll('mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane');
-                    for (const dlg of dialogs) {
-                        if (/stockist|supplier|patient details|enter suggested qty/i.test(dlg.innerText || '')) return true;
-                    }
+                    // Check if Order Details section still visible (by presence
+                    // of the Product input we just used)
+                    const inputs = document.querySelectorAll('input[placeholder="Product"]');
+                    for (const el of inputs) { if (el.offsetParent) return true; }
                     return false;
                 }"""
             )
@@ -478,23 +517,22 @@ async def place_order(
             shots.append(await _shot(page, "no-add-button") or "")
             return {"ok": False, "error": "Could not click 'Add to PO' button", "screenshots": shots, "steps": steps}
 
-        # 12. Handle "Create Account" warning for new patients ---------
+        # 12. Handle "Create/Created Account" warning for new patients.
+        # Popup: "No Patient Found with Mobile No: XXX" → buttons: "Created
+        # Account" (primary, red) and "Leave it". Click Created Account.
         await page.wait_for_timeout(2500)
         shots.append(await _shot(page, "post-add-to-po") or "")
 
-        # A warning dialog may open ("Patient does not exist — Create
-        # Account?"). Click "Create Account" / "Yes" / "Ok" to confirm.
         created_ok = False
-        for label_rx in [r"create\s*account", r"^create$", r"^yes$", r"^ok$", r"^confirm$", r"^proceed$"]:
+        # Prioritized labels (order matters — "Created Account" first).
+        for label_rx in [r"created?\s*account", r"^\s*create\s*$", r"^\s*yes\s*$", r"^\s*proceed\s*$", r"^\s*confirm\s*$"]:
             if await _click_button_matching(page, label_rx, in_dialog=True):
-                created_ok = True
-                break
+                created_ok = True; break
             if await _click_button_matching(page, label_rx, in_dialog=False):
-                created_ok = True
-                break
+                created_ok = True; break
         if created_ok:
             steps.append("create-account-warning-confirmed")
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(3500)
             shots.append(await _shot(page, "after-create-account") or "")
         else:
             steps.append("no-create-account-warning (existing patient or auto-dismissed)")

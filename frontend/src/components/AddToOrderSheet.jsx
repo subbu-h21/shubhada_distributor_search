@@ -16,6 +16,7 @@ const AddToOrderSheet = ({ open, onOpenChange, defaults }) => {
   const [patient, setPatient] = useState('');
   const [advance, setAdvance] = useState('0');
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const [result, setResult] = useState(null); // { ok, error, screenshots, steps }
 
   React.useEffect(() => {
@@ -27,6 +28,7 @@ const AddToOrderSheet = ({ open, onOpenChange, defaults }) => {
       setPatient('');
       setAdvance('0');
       setResult(null);
+      setElapsed(0);
     }
   }, [open, defaults]);
 
@@ -34,18 +36,26 @@ const AddToOrderSheet = ({ open, onOpenChange, defaults }) => {
 
   const onSave = async () => {
     if (!canSave) { toast.error('Product, patient name and qty are required'); return; }
-    setBusy(true); setResult(null);
+    setBusy(true); setResult(null); setElapsed(0);
     try {
-      const r = await OrderAPI.place({
-        product: product.trim(),
-        supplier: supplier.trim(),
-        qty: parseInt(qty, 10) || 1,
-        mobile: mobile.trim(),
-        patient: patient.trim(),
-        advance: parseFloat(advance) || 0,
-      });
-      setResult({ ok: true, ...r });
-      toast.success('Order placed on Shubhada PO');
+      const r = await OrderAPI.placeAndWait(
+        {
+          product: product.trim(),
+          supplier: supplier.trim(),
+          qty: parseInt(qty, 10) || 1,
+          mobile: mobile.trim(),
+          patient: patient.trim(),
+          advance: parseFloat(advance) || 0,
+        },
+        { pollMs: 3000, timeoutMs: 240000, onProgress: (s) => setElapsed(s) },
+      );
+      if (r.ok) {
+        setResult({ ok: true, ...r });
+        toast.success('Order placed on Shubhada PO');
+      } else {
+        setResult({ ok: false, ...r });
+        toast.error(r.error || 'Order failed');
+      }
     } catch (e) {
       const d = e?.response?.data?.detail;
       const parsed = typeof d === 'object' ? d : { error: (typeof d === 'string' ? d : (e.message || 'Order failed')) };
@@ -128,7 +138,7 @@ const AddToOrderSheet = ({ open, onOpenChange, defaults }) => {
             <button type="button" onClick={onSave} disabled={busy || !canSave}
               className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[12px] mono-track-wide rounded-sm press flex items-center justify-center gap-2 disabled:opacity-50"
               data-testid="ato-save">
-              {busy ? <><Loader2 className="w-4 h-4 animate-spin" /> PLACING ORDER…</> : <>SAVE & PLACE ON SHUBHADA PO</>}
+              {busy ? <><Loader2 className="w-4 h-4 animate-spin" /> PLACING ORDER… {elapsed > 0 && `(${elapsed}s)`}</> : <>SAVE & PLACE ON SHUBHADA PO</>}
             </button>
           </div>
 

@@ -952,9 +952,11 @@ async def retailio_session_clear():
 
 
 # ============================================================
+# ============================================================
 # Shubhada Pharma — PO placement automation
 # ============================================================
 from shubhada_po import place_order as _sh_place_order  # noqa: E402
+import uuid as _uuid  # noqa: E402
 
 
 class OrderPlaceRequest(BaseModel):
@@ -966,23 +968,48 @@ class OrderPlaceRequest(BaseModel):
     advance: Optional[float] = 0
 
 
+# In-memory task store (survives for lifetime of process). Each task holds:
+# { status: 'running' | 'done', result: { ok, error, screenshots, steps } }
+_order_tasks: dict = {}
+
+
+async def _run_order_task(task_id: str, payload: OrderPlaceRequest):
+    try:
+        res = await _sh_place_order(
+            _get_browser,
+            product=payload.product,
+            supplier=(payload.supplier or "").strip(),
+            qty=int(payload.qty),
+            mobile=(payload.mobile or "").strip(),
+            patient=payload.patient.strip(),
+            advance=float(payload.advance or 0),
+        )
+    except Exception as e:
+        res = {"ok": False, "error": f"{e.__class__.__name__}: {e}", "screenshots": [], "steps": []}
+    _order_tasks[task_id] = {"status": "done", "result": res}
+
+
 @api_router.post("/order/place")
 async def order_place(payload: OrderPlaceRequest):
+    """Start the Shubhada PO automation in the background and immediately
+    return a task_id. The frontend polls /api/order/status/{task_id} for
+    the final result. This avoids Cloudflare's ~100s edge timeout."""
     if not payload.product or not payload.patient or not payload.qty:
         raise HTTPException(400, "product, patient and qty are required")
-    res = await _sh_place_order(
-        _get_browser,
-        product=payload.product,
-        supplier=(payload.supplier or "").strip(),
-        qty=int(payload.qty),
-        mobile=(payload.mobile or "").strip(),
-        patient=payload.patient.strip(),
-        advance=float(payload.advance or 0),
-    )
-    if not res.get("ok"):
-        # Return the screenshots + steps so the user can see where it broke
-        raise HTTPException(400, {"error": res.get("error"), "screenshots": res.get("screenshots"), "steps": res.get("steps")})
-    return res
+    task_id = _uuid.uuid4().hex
+    _order_tasks[task_id] = {"status": "running", "result": None}
+    asyncio.create_task(_run_order_task(task_id, payload))
+    return {"task_id": task_id, "status": "running"}
+
+
+@api_router.get("/order/status/{task_id}")
+async def order_status(task_id: str):
+    t = _order_tasks.get(task_id)
+    if not t:
+        raise HTTPException(404, "unknown task_id")
+    if t["status"] == "running":
+        return {"task_id": task_id, "status": "running"}
+    return {"task_id": task_id, "status": "done", **(t.get("result") or {})}
 
 
 @api_router.post("/products/upload")
