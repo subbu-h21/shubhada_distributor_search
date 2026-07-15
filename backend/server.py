@@ -158,6 +158,8 @@ def infer_portal_type(portal: str) -> str:
         return "CHETHANA"
     if "LIVECONNECT" in p:
         return "LIVECONNECT"
+    if "VARDHAMAN" in p or "EASYSOL" in p:
+        return "VARDHAMAN"
     return "GENERIC"
 
 

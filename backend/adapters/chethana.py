@@ -260,8 +260,26 @@ class ChethanaAdapter(BaseAdapter):
                 if q:
                     await q.click()
                     await q.fill(str(qty_to_fill))
-                    await page.keyboard.press("Enter")
-                    await page.wait_for_timeout(2500)
+                    # Use TAB, not Enter — Enter triggers a full ASP.NET form
+                    # postback which reloads the page and clears the qty.
+                    # Tab fires onblur → the portal's JS validates and paints
+                    # the color indicator without navigating away.
+                    await page.keyboard.press("Tab")
+                    await page.wait_for_timeout(3000)
+                    # Verify qty stayed put (defensive)
+                    still_filled = await page.evaluate(f"() => (document.getElementById('{QTY_SEL[1:]}') || {{}}).value")
+                    if not still_filled:
+                        # Postback happened — refill and dispatch change event via JS
+                        await q.click()
+                        await q.fill(str(qty_to_fill))
+                        await page.evaluate(f"""() => {{
+                            const el = document.getElementById('{QTY_SEL[1:]}');
+                            if (el) {{
+                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+                            }}
+                        }}""")
+                        await page.wait_for_timeout(2000)
             except Exception:
                 pass
 

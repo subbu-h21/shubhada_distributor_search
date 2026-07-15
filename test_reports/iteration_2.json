@@ -1,0 +1,40 @@
+{
+  "summary": "Ran regression suite for CHETHANA color-status fix + new VARDHAMAN adapter + SUNSHOP + manual-pick. 4/5 tests PASSED. VARDHAMAN adapter WORKS end-to-end (SUCCESS on PROLOMET XL 25 with Avl indicator; NOT_FOUND on fake drug with candidates list). SUNSHOP regression passes. Manual-pick still works (KAPILA PROLYTE ORS APPLE LIQ → SUCCESS). CHETHANA STILL FAILING: same bug as iteration_1 — Quantity input on chiragpharma.in is still EMPTY in the results-with-color screenshot, so no color-coded stock row paints and debug.stockStatus stays null. The Tab+JS-refill fallback did not fix it.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/extract (CHETHANA / CHIRAG PHARMA)",
+        "issue": "Bug NOT fixed by iteration 2. Screenshot 4bfc949c-...-results-with-color_1056a1.png still shows the Quantity input EMPTY on the userr.aspx row. debug.stockStatus=null. Adapter falls back to status=SUCCESS with detail='Matched: PROLOMET XL 25 MG $' but no colored row is ever painted because qty never gets/keeps a value. items[0].available_qty is None.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_extract_regression.py",
+    "/app/test_reports/pytest/iteration2_results.xml"
+  ],
+  "action_items": [
+    "CHETHANA qty entry: neither Enter nor Tab succeeded. The value is either being wiped by an ASP.NET postback that fires on the earlier suggestion pick, or the qty input is disabled/read-only until the row is fully committed. Recommended next steps: (a) After picking the suggestion, add page.wait_for_function until the row's MRP cell has value (Txtmrp non-empty) AND the qty input is not disabled — the screenshot shows MRP=68.47 present, so this alone isn't enough. (b) Instead of q.click()+q.fill(), try focusing via JS: `document.getElementById('ctl00_ContentPlaceHolder1_txt_quanty').focus()` then `page.keyboard.type('10', delay=100)` char-by-char (portal may listen to keydown/keyup for its stock check). (c) Directly set value + dispatch input+change+keyup events, then blur via JS: `el.value='10'; ['input','change','keyup','blur'].forEach(t=>el.dispatchEvent(new Event(t,{bubbles:true})));`. (d) Inspect chiragpharma.in HTML for the onblur/onchange handler name and call the underlying JS function directly (`__doPostBack` with correct args to trigger the stock-check panel).",
+    "Remove the silent `except Exception: pass` around the qty-fill block in chethana.py so failures surface in adapter._last_error and can be seen in debug output.",
+    "Consider polling for the colored row for up to ~5s after qty entry (currently waits 3s then reads once)."
+  ],
+  "critical_code_review_comments": [
+    "chethana.py: qty-fill block still silently swallows all exceptions — makes debugging hard. Emit self._last_error on failure.",
+    "chethana.py: the JS `still_filled` check uses document.getElementById after a possible postback, but does not check if the element is disabled. If the input is disabled or hidden, fill() would silently no-op with a stale ElementHandle.",
+    "vardhaman.py: register response listener is fine but never removed — for long-lived pages this can leak; consider page.remove_listener at end. Also `_on_response` is awaited inside a sync lambda — currently works because page.on passes a coroutine, but this is fragile.",
+    "vardhaman.py: hard-coded 3500ms sleep after login; consider wait_for_url('**ItemOrder.aspx**') for robustness.",
+    "server.py manual-pick returns {'result': ...}; not documented — clients need to know this shape differs from /extract."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_extract_regression.py (new, replaces older single-scenario test)"
+  ],
+  "success_rate": {"backend": "80% (4/5 tests passed)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "shubhada / 2612 (app JWT). Distributor creds already encrypted in db.targets.",
+  "seed_data_creation": "None. All targets (CHIRAG PHARMA / VARDHAMAN MEDISALES PVT LTD / SAROJ PHARMA / KAPILA PHARMA / LIVECONNECT) already seeded.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file /app/backend/tests/test_extract_regression.py covers all 5 scenarios. Run WITHOUT xdist (uses live browsers, ~4-6min total). CHETHANA test is the sole failure; the resulting 'results-with-color' screenshot in /app/backend/data/screenshots/ (starts with the returned history_id) visually proves the Quantity input is still empty at capture time even with the new Tab+JS-refill fallback. VARDHAMAN new adapter is CONFIRMED WORKING (SUCCESS + Avl + pack='15`S' + mrp populated + candidates list on NOT_FOUND + results-with-avl screenshot). Manual-pick returns {'result': {...}} shape (not a full history), tests updated accordingly.",
+  "rca_of_the_issue": "CHETHANA: Same RCA as iteration_1 still holds. After the autocomplete suggestion click on chiragpharma.in userr.aspx, an ASP.NET partial postback re-renders the order row. The adapter now presses Tab instead of Enter, but the results-with-color screenshot proves the Quantity <input> next to PROLOMET XL 25 MG remains blank. Either (a) the qty input is disabled until a separate scripted event fires, (b) the JS defensive refill is wiped by another postback before it takes effect, or (c) the ElementHandle `q` is stale after the pick postback and the fill silently no-ops. Since the color legend on the right (class style65) is correctly excluded, the JS probe correctly returns null. Fix must ensure the qty value is present AND the portal's onblur/onchange handler runs to paint the colored row before the screenshot is taken. See action_items for concrete alternatives (direct JS value+event dispatch, char-by-char keyboard.type after focus, or invoking the ASP.NET __doPostBack directly)."
+}
