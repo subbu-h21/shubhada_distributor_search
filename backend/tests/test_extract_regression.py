@@ -82,6 +82,13 @@ class TestChethanaColor:
         assert aq is not None and aq in ("in-stock", "partial", "0"), (
             f"available_qty {aq!r} not mapped"
         )
+        # (d/e) The screenshot filename should end with .png and be fetchable
+        assert shot.endswith(".png"), f"screenshot {shot!r} not .png"
+        r = requests.get(f"{API}/screenshots/{shot}", headers=headers, timeout=30)
+        assert r.status_code == 200, f"GET /api/screenshots/{shot} -> {r.status_code}"
+        assert r.headers.get("content-type", "").startswith("image/"), (
+            f"content-type={r.headers.get('content-type')!r}"
+        )
 
 
 # ---------- VARDHAMAN new adapter ----------
@@ -128,6 +135,31 @@ class TestSunshopRegression:
         assert res.get("status") in ("SUCCESS", "NOT_FOUND"), (
             f"SUNSHOP regressed to {res.get('status')}: {res.get('detail')}"
         )
+
+
+# ---------- LIVECONNECT regression ----------
+class TestLiveconnectRegression:
+    def test_liveconnect_no_error(self, headers, targets):
+        lc = [t for t in targets if (t.get("portalType") or "").upper() == "LIVECONNECT"]
+        assert lc, "no LIVECONNECT targets found"
+        for d in lc:
+            body, res = _extract(headers, d["id"])
+            assert res.get("status") in ("SUCCESS", "NOT_FOUND"), (
+                f"LIVECONNECT {d.get('name')} regressed to {res.get('status')}: {res.get('detail')}"
+            )
+
+
+# ---------- Distributor location field ----------
+class TestTargetsLocation:
+    def test_location_present(self, targets):
+        assert isinstance(targets, list) and targets
+        for t in targets:
+            # location must be present (string or None) — should not raise on access
+            assert "location" in t, f"target {t.get('name')} missing 'location' key"
+            loc = t.get("location")
+            assert loc is None or isinstance(loc, str), (
+                f"location for {t.get('name')} must be str/None, got {type(loc).__name__}"
+            )
 
 
 # ---------- Manual pick ----------

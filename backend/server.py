@@ -74,6 +74,7 @@ class Distributor(BaseModel):
     url: str
     portal: str                 # e.g. "SUNSHOP" | "CHETHANA" | "VARDHAMAN"
     portalType: str = "GENERIC" # adapter to use — SUNSHOP | GENERIC etc.
+    location: Optional[str] = None
     username: Optional[str] = None
     hasCredentials: bool = False
     selected: bool = True

@@ -5,6 +5,7 @@ import { CheckCircle2, XCircle, AlertOctagon, Loader2, Zap, Copy, Download, KeyR
 import { toast } from 'sonner';
 import { screenshotUrl } from '../lib/api';
 import ResultCard from './ResultCard';
+import ExtractionProgress from './ExtractionProgress';
 
 const ExtractionModal = ({ open, onOpenChange }) => {
   const { product, quantity, distributors, runExtraction } = useApp();
@@ -105,26 +106,12 @@ const ExtractionModal = ({ open, onOpenChange }) => {
 
         <div className="flex-1 overflow-y-auto">
           {phase === 'running' && (
-            <div className="px-6 py-10 flex flex-col items-center justify-center min-h-[300px]">
-              <Loader2 className="w-8 h-8 animate-spin mb-4" strokeWidth={1.6} />
-              <p className="text-[13px] mono-track-wide font-semibold text-neutral-900">LOGGING IN &amp; SCRAPING…</p>
-              <p className="mt-2 text-[11px] mono-track-tight text-neutral-500 text-center max-w-md">
-                Opening a headless browser for each selected distributor, logging in, searching for the product, and capturing screenshots.<br />This may take 20–60 seconds.
-              </p>
-              <ul className="mt-6 w-full max-w-md space-y-2">
-                {active.map((t) => (
-                  <li key={t.id} className="flex items-center gap-2 text-[12px] mono-track-tight">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-neutral-400" />
-                    <span className="font-semibold uppercase truncate">{t.name}</span>
-                    {!t.hasCredentials && (
-                      <span className="ml-auto flex items-center gap-1 text-[9px] mono-track-wide text-neutral-400">
-                        <KeyRound className="w-3 h-3" /> NO CREDS
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <ExtractionProgress
+              distributors={active}
+              resultsByTargetId={{}}
+              product={product}
+              quantity={quantity}
+            />
           )}
 
           {phase === 'error' && (

@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 3 CHETHANA fix VERIFIED. All 7 backend regression tests PASSED (98.85s). Direct JS value-set + event dispatch + polling approach successfully triggered chiragpharma.in's ASP.NET stock-check: debug.stockStatus is now populated (AVAILABLE/INSUFFICIENT/UNAVAILABLE), items[0].available_qty is mapped (in-stock/partial/0), and the 'results-with-color' screenshot filename resolves via GET /api/screenshots/{name} with image/png content-type. Regressions clean: VARDHAMAN (SUCCESS + Avl + pack + mrp), VARDHAMAN NOT_FOUND (candidates list), SUNSHOP/SAROJ, LIVECONNECT (all sellers), manual-pick on KAPILA. Distributor 'location' field is present on every GET /api/targets doc (string or None).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_extract_regression.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "chethana.py: qty JS-fill exception is captured to self._last_error (good) but the polling loop still returns null silently after 5s if the portal is slow; consider surfacing '5s poll timeout' in debug so future regressions are diagnosable.",
+    "chethana.py: the wanted-color list uses exact string match 'rgb(0, 128, 0)' etc. — if the portal ever emits rgba() or shorthand, detection would silently fail. Consider parsing to numeric r,g,b and comparing with tolerance.",
+    "chethana.py: legend cells are excluded by className containing 'style65'; hard-coded class name is brittle to portal HTML changes.",
+    "server.py: no consistent handling documented for the Distributor.location field (nullable string vs omitted). Confirmed via test that key is always present — good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_extract_regression.py (added LIVECONNECT regression, targets 'location' field test, and screenshot-fetch assertion for CHETHANA)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "shubhada / 2612",
+  "seed_data_creation": "None. Existing seeded targets used (CHIRAG PHARMA/CHETHANA, VARDHAMAN, SAROJ/SUNSHOP, KAPILA/SUNSHOP, LIVECONNECT sellers).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Regression suite at /app/backend/tests/test_extract_regression.py covers: CHETHANA color+screenshot fetch, VARDHAMAN success+NOT_FOUND, SUNSHOP, LIVECONNECT (all sellers), targets.location, manual-pick. Runs ~100s under xdist 2 workers. All passing on this iteration. Auth token key returned as 'token' (not 'access_token').",
+  "rca_of_the_issue": "Root cause was that chiragpharma.in's userr.aspx qty <input> was left empty by prior fill()+Tab attempts because the ASP.NET partial postback triggered by autocomplete selection re-rendered the row and Playwright's ElementHandle went stale / Tab did not dispatch the events the portal listened on. Iteration 3 fix: (1) wait_for_function ensures the qty input exists, is enabled, and visible AFTER the postback; (2) page.evaluate directly sets el.value and dispatches input/change/keyup/blur events with bubbles:true — matching whatever handler the portal registered; (3) poll up to 5s (10 x 500ms) for a TR/TD whose computed backgroundColor matches AVAILABLE/INSUFFICIENT/UNAVAILABLE (legend .style65 excluded). Verified by test: debug.stockStatus is non-null, items[0].available_qty is mapped, results-with-color screenshot is generated and fetchable via /api/screenshots/{name}."
+}

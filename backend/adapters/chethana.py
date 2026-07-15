@@ -247,62 +247,53 @@ class ChethanaAdapter(BaseAdapter):
                 out.detail = "No matching product in CHETHANA autocomplete"
                 return out
 
-            # Fill quantity + press Enter — this triggers the portal's stock-check
-            # which paints a colored <tr> next to the row:
-            #   rgb(0,128,0)     = GREEN   → Stock Available
-            #   rgb(255,255,0)   = YELLOW  → Insufficient Stock
-            #   rgb(255,0,0)     = RED     → Stock Unavailable
-            # We always fill qty (default 1 if user didn't specify) so the color
-            # indicator activates.
+            # Fill quantity + wait for stock-color paint.
+            # Prior iterations tried Enter (postback wiped value) and Tab (didn't
+            # trigger portal's stock check). Now: directly SET value via JS +
+            # dispatch input/change/keyup/blur events. Then poll for the colored
+            # <tr> for up to 5 seconds.
             qty_to_fill = quantity if quantity and quantity > 0 else 1
+            self._last_error = ""
             try:
-                q = await page.query_selector(QTY_SEL)
-                if q:
-                    await q.click()
-                    await q.fill(str(qty_to_fill))
-                    # Use TAB, not Enter — Enter triggers a full ASP.NET form
-                    # postback which reloads the page and clears the qty.
-                    # Tab fires onblur → the portal's JS validates and paints
-                    # the color indicator without navigating away.
-                    await page.keyboard.press("Tab")
-                    await page.wait_for_timeout(3000)
-                    # Verify qty stayed put (defensive)
-                    still_filled = await page.evaluate(f"() => (document.getElementById('{QTY_SEL[1:]}') || {{}}).value")
-                    if not still_filled:
-                        # Postback happened — refill and dispatch change event via JS
-                        await q.click()
-                        await q.fill(str(qty_to_fill))
-                        await page.evaluate(f"""() => {{
-                            const el = document.getElementById('{QTY_SEL[1:]}');
-                            if (el) {{
-                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
-                            }}
-                        }}""")
-                        await page.wait_for_timeout(2000)
-            except Exception:
-                pass
+                # Ensure the qty input is visible + not disabled
+                await page.wait_for_function(
+                    f"() => {{ const e=document.getElementById('{QTY_SEL[1:]}'); return e && !e.disabled && e.offsetParent!==null; }}",
+                    timeout=8000,
+                )
+                await page.evaluate(f"""(v) => {{
+                    const el = document.getElementById('{QTY_SEL[1:]}');
+                    if (!el) return 'no-elem';
+                    el.focus();
+                    el.value = v;
+                    ['input','change','keyup','blur'].forEach(t =>
+                        el.dispatchEvent(new Event(t, {{ bubbles: true }}))
+                    );
+                    return el.value;
+                }}""", str(qty_to_fill))
+            except Exception as e:
+                self._last_error = f"qty JS-fill: {e}"
 
-            # Read the color-coded stock status
-            stock_status = await page.evaluate("""() => {
-                // Look for a small colored element that is NOT part of the
-                // bottom legend (legend uses class 'style65').
-                const wanted = [
-                    { rgb: 'rgb(0, 128, 0)',   label: 'AVAILABLE' },
-                    { rgb: 'rgb(255, 255, 0)', label: 'INSUFFICIENT' },
-                    { rgb: 'rgb(255, 0, 0)',   label: 'UNAVAILABLE' },
-                ];
-                for (const el of document.querySelectorAll('tr, td')) {
-                    if (!el.offsetParent) continue;
-                    if ((el.className || '').includes('style65')) continue;
-                    const bg = window.getComputedStyle(el).backgroundColor;
-                    const match = wanted.find(w => w.rgb === bg);
-                    if (match) {
-                        return { color: bg, label: match.label };
+            # Poll up to 5s for the colored status row to appear
+            stock_status = None
+            for _ in range(10):
+                await page.wait_for_timeout(500)
+                stock_status = await page.evaluate("""() => {
+                    const wanted = [
+                        { rgb: 'rgb(0, 128, 0)',   label: 'AVAILABLE' },
+                        { rgb: 'rgb(255, 255, 0)', label: 'INSUFFICIENT' },
+                        { rgb: 'rgb(255, 0, 0)',   label: 'UNAVAILABLE' },
+                    ];
+                    for (const el of document.querySelectorAll('tr, td')) {
+                        if (!el.offsetParent) continue;
+                        if ((el.className || '').includes('style65')) continue;
+                        const bg = window.getComputedStyle(el).backgroundColor;
+                        const m = wanted.find(w => w.rgb === bg);
+                        if (m) return { color: bg, label: m.label };
                     }
-                }
-                return null;
-            }""")
+                    return null;
+                }""")
+                if stock_status:
+                    break
 
             data = await self._read_selected(page)
             # The final screenshot MUST be taken AFTER the color indicator has
