@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { screenshotUrl } from '../lib/api';
 import ResultCard from './ResultCard';
 import ExtractionProgress from './ExtractionProgress';
+import { explodeResults } from '../lib/resultUtils';
 
 const ExtractionModal = ({ open, onOpenChange }) => {
   const { product, quantity, distributors, runExtraction } = useApp();
@@ -132,7 +133,7 @@ const ExtractionModal = ({ open, onOpenChange }) => {
               </div>
 
               <ul className="space-y-3">
-                {(entry.results || []).map((r) => (
+                {explodeResults(entry.results || []).map((r) => (
                   <li key={r.targetId}>
                     <ResultCard
                       result={r}
@@ -141,7 +142,9 @@ const ExtractionModal = ({ open, onOpenChange }) => {
                       onUpdate={(nr) => {
                         setEntry((prev) => prev ? {
                           ...prev,
-                          results: prev.results.map((x) => x.targetId === nr.targetId ? nr : x),
+                          // Update the underlying (aggregator) row — the
+                          // explode helper will re-expand on next render.
+                          results: prev.results.map((x) => x.targetId === (nr._parentTargetId || nr.targetId) ? nr : x),
                         } : prev);
                       }}
                     />

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import ResultCard from './ResultCard';
+import { explodeResults } from '../lib/resultUtils';
 
 const HistoryDetail = ({ entry, onClose }) => {
   const open = !!entry;
@@ -27,7 +28,7 @@ const HistoryDetail = ({ entry, onClose }) => {
 
               {entry.results && entry.results.length > 0 ? (
                 <ul className="space-y-3">
-                  {entry.results.map((r) => (
+                  {explodeResults(entry.results).map((r) => (
                     <li key={r.targetId}><ResultCard result={r} requestedQty={entry.quantity} /></li>
                   ))}
                 </ul>
