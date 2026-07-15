@@ -125,80 +125,96 @@ class ChethanaAdapter(BaseAdapter):
         await self._screenshot(page, "order-page")
 
     async def _type_and_pick(self, page, product: str) -> Optional[str]:
-        """Type product word-by-word into pdt_code; return the raw suggestion
-        text that was clicked, or None if no acceptable match found."""
+        """Progressive-probe strategy (per user request):
+          1. Type first 4 chars → snapshot dropdown + screenshot
+          2. Type full query   → snapshot dropdown + screenshot
+          3. Merge candidate lists, score, boost items present in BOTH probes
+          4. Click the best candidate (re-type if needed to make it visible)
+        """
+        from .probe import progressive_autocomplete, Candidate
+
+        # Prep the input
         el = await page.query_selector(PDT_CODE_SEL)
         if not el:
             return None
-        try:
-            await el.click()
-        except Exception:
-            pass
-        try:
-            await el.fill("")
-        except Exception:
-            pass
+        try: await el.click()
+        except Exception: pass
+        try: await el.fill("")
+        except Exception: pass
 
-        raw_tokens = re.findall(r"[a-z0-9]+", product.lower())
-        if not raw_tokens:
-            return None
         query_canon = canon(product)
 
-        # Type each token with a small delay; wait for AJAX after each
-        for i, tok in enumerate(raw_tokens):
-            if i > 0:
-                try:
-                    await page.keyboard.type(" ", delay=60)
-                except Exception:
-                    pass
-            try:
-                await page.keyboard.type(tok, delay=90)
-            except Exception:
-                break
-            await page.wait_for_timeout(800 if i < len(raw_tokens) - 1 else 1400)
+        # Row-to-name mapper for CHETHANA: rows are "NAME ~CODE ~PACK ~PTR"
+        def _row_to_name(full: str) -> str:
+            return full.split("~", 1)[0].strip()
 
-        await self._screenshot(page, "autocomplete-open")
+        best, merged, dbg = await progressive_autocomplete(
+            page,
+            input_selector=PDT_CODE_SEL,
+            row_selector=f"{AUTOCOMPLETE_UL_SEL} li",
+            query=product,
+            query_canon=query_canon,
+            row_to_name=_row_to_name,
+            screenshotter=self._screenshot,
+        )
+        self._probe_debug = dbg
 
-        # Collect suggestions from the ASP.NET AJAX completion list
-        items = await page.query_selector_all(f"{AUTOCOMPLETE_UL_SEL} li")
-        candidates = []
-        for it in items:
-            try:
-                txt = ((await it.inner_text()) or "").strip()
-                if not txt:
-                    continue
-                # Format: "NAME ~CODE ~PACK ~PRICE" — take the NAME part for scoring
-                name_part = txt.split("~", 1)[0].strip()
-                candidates.append((it, txt, name_part))
-            except Exception:
-                continue
-
-        if not candidates:
-            return None
-
-        best_el, best_score, best_txt = None, -1000, None
-        for el_i, full_txt, name_part in candidates:
-            s = score(query_canon, name_part)
-            if s > best_score:
-                best_score, best_el, best_txt = s, el_i, full_txt
-
-        # Manual pick override: force-select the candidate whose name matches
+        # Manual pick override still wins
         forced = getattr(self, "_force_candidate", None)
         if forced:
-            from .match import canon as _c
-            f_canon = _c(forced)
-            for el_i, full_txt, name_part in candidates:
-                if _c(name_part) == f_canon or forced.lower() in name_part.lower():
-                    best_el, best_score, best_txt = el_i, 55, full_txt
+            f_canon_raw = canon(forced)
+            f_canon = tuple(f_canon_raw) if isinstance(f_canon_raw, (list, tuple)) else (str(f_canon_raw),)
+            for c in merged:
+                if c.canon == f_canon or forced.lower() in c.name.lower():
+                    best = c
+                    best.score = max(best.score, 55)
                     break
 
-        if best_el is None or best_score < ACCEPT_THRESHOLD:
+        if best is None:
             return None
+
+        # We need to click on the row that contains this candidate in the
+        # CURRENT dropdown. If it's not visible we retype the query so the
+        # portal re-shows the same suggestion set.
+        async def _find_row(name_canon: tuple):
+            items = await page.query_selector_all(f"{AUTOCOMPLETE_UL_SEL} li")
+            for it in items:
+                try:
+                    if not await it.is_visible(): continue
+                    txt = ((await it.inner_text()) or "").strip()
+                    if not txt: continue
+                    name_part = txt.split("~", 1)[0].strip()
+                    c = canon(name_part)
+                    ck = tuple(c) if isinstance(c, (list, tuple)) else (str(c),)
+                    if ck == name_canon:
+                        return it, txt
+                except Exception:
+                    continue
+            return None, None
+
+        row_el, row_txt = await _find_row(best.canon)
+        if row_el is None:
+            # Re-type the full query so the dropdown reappears
+            try: await el.click()
+            except Exception: pass
+            try: await el.fill("")
+            except Exception: pass
+            try: await el.type(product, delay=90)
+            except Exception:
+                try: await page.keyboard.type(product, delay=90)
+                except Exception: pass
+            await page.wait_for_timeout(1400)
+            row_el, row_txt = await _find_row(best.canon)
+
+        if row_el is None:
+            return None
+
         try:
-            await best_el.click()
+            await row_el.click()
         except Exception:
             return None
-        return best_txt
+
+        return row_txt or best.full_text
 
     async def _read_selected(self, page):
         """Return dict of populated fields after a suggestion is clicked and
@@ -288,6 +304,21 @@ class ChethanaAdapter(BaseAdapter):
             out.search_screenshot = await self._screenshot(page, "search-page")
 
             picked_text = await self._type_and_pick(page, product)
+            # Surface progressive-probe debug + screenshots to the UI
+            probe_dbg = getattr(self, "_probe_debug", None) or {}
+            if probe_dbg:
+                out.debug["probe"] = {
+                    "prefix_row_count": probe_dbg.get("prefix_row_count"),
+                    "full_row_count":   probe_dbg.get("full_row_count"),
+                    "prefix_top":       probe_dbg.get("prefix_top"),
+                    "full_top":         probe_dbg.get("full_top"),
+                    "merged":           probe_dbg.get("merged"),
+                }
+                if probe_dbg.get("prefix_screenshot"):
+                    out.search_screenshot = probe_dbg["prefix_screenshot"]
+                if probe_dbg.get("full_screenshot"):
+                    # Use the full-typed screenshot as the primary "search" one
+                    out.debug["autocomplete_full_screenshot"] = probe_dbg["full_screenshot"]
             if not picked_text:
                 out.results_screenshot = await self._screenshot(page, "no-match")
                 out.status = "NOT_FOUND"
@@ -436,7 +467,7 @@ class ChethanaAdapter(BaseAdapter):
             else:
                 out.status = "SUCCESS"
                 out.detail = f"Matched: {item.matched_name}"
-            out.debug = {"code": data.get("code"), "total": data.get("total"), "stockStatus": stock_label}
+            out.debug.update({"code": data.get("code"), "total": data.get("total"), "stockStatus": stock_label})
             return out
         except Exception as e:
             out.status = "ERROR"
