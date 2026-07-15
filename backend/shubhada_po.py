@@ -2,22 +2,27 @@
 
 Endpoint: /api/order/place (see server.py)
 
-Given { product, supplier, qty, mobile, patient, advance } from the extraction
-result screen, this module:
-  1. Logs in to https://shubhadahealth.com:7007 as `9448188002 / Q`.
-  2. Navigates to the "Re-Ordering Process" (Purchase Order Management) page.
-  3. Types the product name into the top search bar and clicks the first
-     matching autocomplete suggestion — this appends a new row to the PO
-     table.
-  4. Sets the new row's Qty column.
-  5. Clicks the row's "Modify Patient Details" link and fills patient name,
-     mobile, quantity + advance-payment fields.
-  6. Clicks the "Add to PO" (or "Save" fallback) button inside that dialog.
-  7. Captures diagnostic screenshots at each step for the caller to display.
+Flow (per user spec):
+  1. Login to https://shubhadahealth.com:7007 as `9448188002 / Q`.
+  2. Click "Re-Ordering Process" tile → search screen.
+  3. Click the "Add New Medicine" link at the top of the reorder page —
+     this opens the fresh Order Details dialog.
+  4. In the dialog's Product field, type the product name and pick the
+     matching autocomplete option.
+  5. In the Supplier field, type the FIRST 4 LETTERS of the distributor
+     name. A dropdown appears → pick the option matching the passed-in
+     supplier.
+  6. Expand the "Patient Details" section.
+  7. Type patient name → if an auto-suggest option appears, click it;
+     otherwise keep the typed value.
+  8. Enter qty into "Quantity" and advance into "Advance Payment".
+  9. Click "Add to PO".
+ 10. If this is a new patient, a warning box appears with a "Create Account"
+     button → click it to confirm.
+ 11. Return success back to caller with screenshots + step log.
 
-The selectors are best-effort (Shubhada's UI is Angular Material). If a step
-fails, the caller receives a structured `error` + `screenshots` list so the
-main app can show the user exactly where automation broke.
+Selectors are Angular Material; failures are surfaced as `{ok:false, error,
+screenshots, steps}` for debugging.
 """
 from __future__ import annotations
 import os, uuid, re
@@ -41,6 +46,177 @@ async def _shot(page, tag: str) -> Optional[str]:
         return None
 
 
+async def _fill_dialog_field(page, regex: str, value: str, *, force_enable: bool = False) -> bool:
+    """Find an input in ANY currently-open dialog whose placeholder/name/id/
+    surrounding label matches `regex` (case-insensitive) and set its value.
+    If force_enable=True, temporarily remove disabled attr so Angular
+    Material's readonly-styled inputs accept programmatic values."""
+    try:
+        return bool(await page.evaluate(
+            """({rx, v, force}) => {
+                const re = new RegExp(rx, 'i');
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                // Search all likely dialog containers PLUS the entire document
+                // (some Angular apps render form pieces outside the overlay).
+                const dialogs = Array.from(document.querySelectorAll(
+                    'mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane, .modal-content, [role=dialog]'
+                ));
+                const scopes = dialogs.length ? [...dialogs, document] : [document];
+                const seen = new Set();
+                const inputs = [];
+                for (const s of scopes) {
+                    for (const el of s.querySelectorAll('input, textarea')) {
+                        if (seen.has(el)) continue;
+                        seen.add(el);
+                        inputs.push(el);
+                    }
+                }
+                // Match strictly by name/placeholder/id first
+                for (const el of inputs) {
+                    if (el.readOnly) continue;
+                    if (el.disabled && !force) continue;
+                    const meta = (el.placeholder||'') + ' ' + (el.name||'') + ' ' + (el.id||'');
+                    if (re.test(meta)) {
+                        if (el.disabled) { el.disabled = false; el.removeAttribute('disabled'); }
+                        try { el.focus(); } catch(_) {}
+                        setter.call(el, String(v));
+                        ['input','change','keyup','blur'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
+                        return true;
+                    }
+                }
+                // Broader match against surrounding label text
+                for (const el of inputs) {
+                    if (el.readOnly) continue;
+                    if (el.disabled && !force) continue;
+                    const ctx = ((el.closest('mat-form-field')||el.parentElement||{}).innerText||'').slice(0,400);
+                    if (re.test(ctx)) {
+                        if (el.disabled) { el.disabled = false; el.removeAttribute('disabled'); }
+                        try { el.focus(); } catch(_) {}
+                        setter.call(el, String(v));
+                        ['input','change','keyup','blur'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            {"rx": regex, "v": value, "force": force_enable},
+        ))
+    except Exception:
+        return False
+
+
+async def _focus_dialog_field(page, regex: str, *, force_enable: bool = False) -> bool:
+    """Focus (and clear) a dialog input matching regex — used before typing so
+    that Angular's autocomplete fires with real keyboard events."""
+    try:
+        return bool(await page.evaluate(
+            """({rx, force}) => {
+                const re = new RegExp(rx, 'i');
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                const dialogs = Array.from(document.querySelectorAll(
+                    'mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane, .modal-content, [role=dialog]'
+                ));
+                const scopes = dialogs.length ? [...dialogs, document] : [document];
+                const seen = new Set();
+                const inputs = [];
+                for (const s of scopes) {
+                    for (const el of s.querySelectorAll('input')) {
+                        if (seen.has(el)) continue;
+                        seen.add(el);
+                        inputs.push(el);
+                    }
+                }
+                const tryMatch = (metaFn) => {
+                    for (const el of inputs) {
+                        if (el.readOnly) continue;
+                        if (el.disabled && !force) continue;
+                        if (re.test(metaFn(el))) {
+                            if (el.disabled) { el.disabled = false; el.removeAttribute('disabled'); }
+                            try { el.focus(); } catch(_) {}
+                            setter.call(el, '');
+                            ['input','change','keyup'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if (tryMatch(el => (el.placeholder||'') + ' ' + (el.name||'') + ' ' + (el.id||''))) return true;
+                if (tryMatch(el => ((el.closest('mat-form-field')||el.parentElement||{}).innerText||'').slice(0,400))) return true;
+                return false;
+            }""",
+            {"rx": regex, "force": force_enable},
+        ))
+    except Exception:
+        return False
+
+
+async def _click_mat_option_matching(page, needle: str, timeout_ms: int = 3500, *, require_match: bool = False) -> bool:
+    """Click the mat-option whose text best matches `needle` (case-insensitive
+    substring). If require_match=True, ONLY click if a genuine match exists
+    (used for patient name where we don't want to accidentally pick a random
+    existing patient)."""
+    needle_up = needle.upper().strip()
+    try:
+        await page.wait_for_selector("mat-option, .mat-option, li[role=option]", timeout=timeout_ms)
+    except Exception:
+        return False
+
+    try:
+        clicked = await page.evaluate(
+            """({needle, requireMatch}) => {
+                const opts = Array.from(document.querySelectorAll('mat-option, .mat-option, li[role=option]'))
+                    .filter(o => o.offsetParent);
+                if (!opts.length) return false;
+                let best = null, bestScore = -1;
+                for (const o of opts) {
+                    const t = (o.innerText || '').toUpperCase().trim();
+                    let score = 0;
+                    if (needle && t.includes(needle)) score = needle.length * 2;
+                    else if (needle && t.startsWith(needle.slice(0,4))) score = 4;
+                    if (score > bestScore) { bestScore = score; best = o; }
+                }
+                if (requireMatch && bestScore <= 0) return false;
+                (best || opts[0]).click();
+                return (best || opts[0]).innerText || '';
+            }""",
+            {"needle": needle_up, "requireMatch": require_match},
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
+async def _click_button_matching(page, label_rx: str, in_dialog: bool = True) -> bool:
+    """Click a button whose innerText matches label_rx (case-insensitive)."""
+    try:
+        return bool(await page.evaluate(
+            """({rx, inDlg}) => {
+                const re = new RegExp(rx, 'i');
+                let scopes = [document];
+                if (inDlg) {
+                    const dialogs = Array.from(document.querySelectorAll(
+                        'mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane, .modal-content, [role=dialog]'
+                    ));
+                    scopes = dialogs.length ? dialogs : [document];
+                }
+                const seen = new Set();
+                for (const root of scopes) {
+                    for (const b of root.querySelectorAll('button, a')) {
+                        if (seen.has(b)) continue;
+                        seen.add(b);
+                        if (!b.offsetParent) continue;
+                        const t = (b.innerText || '').trim();
+                        if (re.test(t)) { b.click(); return true; }
+                    }
+                }
+                return false;
+            }""",
+            {"rx": label_rx, "inDlg": in_dialog},
+        ))
+    except Exception:
+        return False
+
+
 async def place_order(
     get_browser,
     *,
@@ -58,16 +234,31 @@ async def place_order(
     browser = await get_browser()
     ctx = await browser.new_context(
         ignore_https_errors=True,
-        user_agent="Mozilla/5.0 Chrome/124.0",
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         viewport={"width": 1366, "height": 900},
     )
     page = await ctx.new_page()
     try:
-        # 1. Login
+        # 1. LOGIN --------------------------------------------------------
         await page.goto(SH_URL, timeout=45000, wait_until="domcontentloaded")
         await page.wait_for_timeout(2200)
-        await page.fill("input[name='user']", SH_USER)
-        await page.fill("input[name='pass']", SH_PASS)
+        try:
+            await page.fill("input[name='user']", SH_USER)
+            await page.fill("input[name='pass']", SH_PASS)
+        except Exception:
+            # Fallback: type by placeholder
+            await page.evaluate(
+                """([u, p]) => {
+                    const inputs = Array.from(document.querySelectorAll('input'));
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    for (const el of inputs) {
+                        const c = ((el.placeholder||'') + ' ' + (el.name||'') + ' ' + (el.id||'')).toLowerCase();
+                        if (/user|mobile|phone|login/.test(c) && !el.value) { setter.call(el, u); el.dispatchEvent(new Event('input',{bubbles:true})); }
+                        if (/pass/.test(c) && !el.value) { setter.call(el, p); el.dispatchEvent(new Event('input',{bubbles:true})); }
+                    }
+                }""",
+                [SH_USER, SH_PASS],
+            )
         await page.evaluate(
             """() => { for (const b of document.querySelectorAll('button')) if ((b.innerText||'').trim().toLowerCase()==='login') { b.click(); return; } }"""
         )
@@ -78,7 +269,7 @@ async def place_order(
         steps.append("login-ok")
         shots.append(await _shot(page, "logged-in") or "")
 
-        # 2. Navigate to Re-Ordering Process
+        # 2. NAV to Re-Ordering Process ----------------------------------
         try:
             await page.locator("text=Re-Ordering Process").first.click(timeout=6000)
         except Exception as e:
@@ -88,187 +279,229 @@ async def place_order(
         steps.append(f"reorder-page url={page.url}")
         shots.append(await _shot(page, "reorder-page") or "")
 
-        # 3. Type product name into #srch_prd, wait for autocomplete
+        # 3. Click "Add New Medicine" link then type into the product
+        # search bar. Clicking "Add New Medicine" simply focuses / anchors
+        # the product-search section; the actual product input is #srch_prd.
+        try:
+            await page.evaluate(
+                """() => {
+                    for (const el of document.querySelectorAll('a, button, span, div')) {
+                        if (!el.offsetParent) continue;
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t === 'add new medicine' || t.startsWith('add new medicine')) { el.click(); return true; }
+                    }
+                    return false;
+                }"""
+            )
+            await page.wait_for_timeout(1000)
+            steps.append("add-new-medicine-clicked")
+        except Exception as e:
+            steps.append(f"add-new-medicine-click-error: {e}")
+
+        # 4. Product search — type into #srch_prd and pick first autocomplete
         srch = await page.query_selector("#srch_prd")
         if not srch:
             shots.append(await _shot(page, "no-search-input") or "")
-            return {"ok": False, "error": "Search products input (#srch_prd) not found", "screenshots": shots, "steps": steps}
+            return {"ok": False, "error": "Product search input (#srch_prd) not found", "screenshots": shots, "steps": steps}
         await srch.click()
         try: await srch.fill("")
         except Exception: pass
         await srch.type(product, delay=90)
-        await page.wait_for_timeout(3500)
-        shots.append(await _shot(page, "search-typed") or "")
+        await page.wait_for_timeout(3000)
+        shots.append(await _shot(page, "product-typed") or "")
 
-        # 4. Click the first autocomplete option → this opens the
-        #    "Order Details" dialog directly (not a table row).
-        opt = page.locator("mat-option, li[role=option]").first
         try:
-            await opt.click(timeout=5000)
+            await page.locator("mat-option, li[role=option]").first.click(timeout=5000)
         except Exception as e:
-            shots.append(await _shot(page, "no-autocomplete") or "")
-            return {"ok": False, "error": f"No autocomplete option matched '{product}': {e}", "screenshots": shots, "steps": steps}
-        steps.append("suggestion-clicked")
-        await page.wait_for_timeout(3500)
+            shots.append(await _shot(page, "no-product-autocomplete") or "")
+            return {"ok": False, "error": f"No autocomplete option matched product '{product}': {e}", "screenshots": shots, "steps": steps}
+        steps.append("product-suggestion-clicked")
+        await page.wait_for_timeout(3000)
+
+        # 4b. Handle potential "WARNING - Already Added" popup by clicking Ok.
+        # If the Order Details dialog is no longer present afterwards, treat
+        # as success (product already on PO).
+        warn_dismissed = await _click_button_matching(page, r"^\s*ok\s*$", in_dialog=False)
+        if warn_dismissed:
+            steps.append("already-added-warning-dismissed")
+            await page.wait_for_timeout(1500)
+            still_open = await page.evaluate(
+                """() => {
+                    const dialogs = document.querySelectorAll('mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane');
+                    for (const dlg of dialogs) {
+                        if (/stockist|supplier|patient details|enter suggested qty/i.test(dlg.innerText || '')) return true;
+                    }
+                    return false;
+                }"""
+            )
+            if not still_open:
+                shots.append(await _shot(page, "already-on-po") or "")
+                return {"ok": True, "screenshots": shots, "steps": steps + ["product-already-on-po"]}
+
         shots.append(await _shot(page, "order-dialog") or "")
 
-        # 5. Fill the "Order Details" dialog fields.
-        # Field layout (verified):
-        #   Product              — readonly
-        #   Stockist/Supplier    — editable (default is recent purchaser)
-        #   Last Pur. Date       — readonly
-        #   Last Pur. Qty        — readonly
-        #   Current Stock        — readonly
-        #   Enter Suggested Qty  — EDITABLE   ← we set this to `qty`
-        #   Patient Details (expandable)      ← we open + fill patient/mobile/advance
-        #   Add To PO button
-        async def _dlg_fill(regex: str, value: str) -> bool:
-            try:
-                return bool(await page.evaluate(
-                    """({rx, v}) => {
-                        const dlg = document.querySelector('mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane');
-                        if (!dlg) return false;
-                        const re = new RegExp(rx, 'i');
-                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-                        for (const el of dlg.querySelectorAll('input, textarea')) {
-                            if (!el.offsetParent) continue;
-                            if (el.readOnly || el.disabled) continue;
-                            const ctx = ((el.placeholder||'') + ' ' + (el.name||'') + ' ' + (el.id||'') + ' ' + ((el.closest('mat-form-field')||el.parentElement||{}).innerText||'')).slice(0,400);
-                            if (re.test(ctx)) {
-                                setter.call(el, String(v));
-                                ['input','change','keyup','blur'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
-                                return true;
-                            }
-                        }
-                        return false;
-                    }""",
-                    {"rx": regex, "v": value},
-                ))
-            except Exception:
-                return False
-
-        # 5a. Enter Suggested Qty
-        set_qty = await _dlg_fill(r"suggested\s*qty|enter\s*suggested", str(qty))
-        steps.append(f"suggested-qty-set={set_qty}")
-        await page.wait_for_timeout(400)
-
-        # 5b. Supplier — clear the auto-filled recent supplier and type ours.
-        # We need to click the field first, then clear + type + pick from dropdown.
+        # 5. SUPPLIER --------------------------------------------------
+        # Field is `disabled=true` by default (shows "By Default Recent
+        # Purchaser"). Force-enable, type first 4 letters of the wanted
+        # distributor, then click the mat-autocomplete option that matches.
         if supplier:
-            try:
-                clicked_supp = await page.evaluate(
+            supp_prefix = re.sub(r"\s+", "", supplier)[:4].upper()
+            focused = await _focus_dialog_field(page, r"stockist|supplier|purchaser", force_enable=True)
+            steps.append(f"supplier-field-focused={focused}")
+            if focused:
+                await page.wait_for_timeout(400)
+                await page.keyboard.type(supp_prefix, delay=110)
+                await page.wait_for_timeout(1800)
+                picked = await _click_mat_option_matching(page, supplier, timeout_ms=3500)
+                steps.append(f"supplier-picked={picked} (prefix='{supp_prefix}', want='{supplier}')")
+                await page.wait_for_timeout(800)
+                shots.append(await _shot(page, "supplier-picked") or "")
+
+        # 6. Enter Suggested Qty (top-level `Enter Suggested Qty` field).
+        # Field is `disabled=true` initially — force-enable it.
+        set_qty = await _fill_dialog_field(page, r"enter\s*suggested\s*qty|suggested\s*qty|^sqt$", str(qty), force_enable=True)
+        steps.append(f"suggested-qty-set={set_qty}")
+        await page.wait_for_timeout(300)
+
+        # 6b. Expand "Patient Details" panel so its fields become visible.
+        # The panel is a mat-expansion-panel; click its header to open it,
+        # then verify aria-expanded=true. If not, click once more.
+        try:
+            for attempt in range(3):
+                expanded = await page.evaluate(
                     """() => {
-                        const dlg = document.querySelector('mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane');
-                        if (!dlg) return false;
-                        for (const el of dlg.querySelectorAll('input')) {
-                            if (!el.offsetParent) continue;
-                            const ctx = ((el.placeholder||'') + ' ' + (el.name||'') + ' ' + ((el.closest('mat-form-field')||el.parentElement||{}).innerText||'')).slice(0,300);
-                            if (/stockist|supplier|purchaser/i.test(ctx) && !el.readOnly) {
-                                el.focus();
-                                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-                                setter.call(el, '');
-                                ['input','change','keyup'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
-                                return true;
+                        // Search whole document; the mat-accordion may be
+                        // outside any mat-dialog-container overlay.
+                        for (const hdr of document.querySelectorAll('mat-expansion-panel-header')) {
+                            if (/patient\\s*details/i.test(hdr.innerText || '')) {
+                                if (hdr.getAttribute('aria-expanded') !== 'true') hdr.click();
+                                return hdr.getAttribute('aria-expanded') === 'true';
                             }
                         }
                         return false;
                     }"""
                 )
-                if clicked_supp:
-                    await page.wait_for_timeout(400)
-                    # Type first few chars of the supplier
-                    supp_prefix = supplier.split(" ")[0][:6]
-                    await page.keyboard.type(supp_prefix, delay=90)
-                    await page.wait_for_timeout(1500)
-                    # Click the first matching mat-option
-                    try:
-                        await page.locator("mat-option").first.click(timeout=3500)
-                        steps.append(f"supplier-picked={supplier}")
-                    except Exception:
-                        steps.append(f"supplier-no-suggestion (typed '{supp_prefix}')")
-                    await page.wait_for_timeout(800)
-                else:
-                    steps.append("supplier-field-not-found")
-            except Exception as e:
-                steps.append(f"supplier-error: {e}")
-
-        # 5c. Expand "Patient Details" section
-        try:
-            await page.evaluate(
-                """() => {
-                    const dlg = document.querySelector('mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane') || document;
-                    for (const el of dlg.querySelectorAll('mat-expansion-panel-header, button, div, span')) {
-                        if (!el.offsetParent) continue;
-                        const t = (el.innerText || '').trim().toLowerCase();
-                        if (t === 'patient details' || t.startsWith('patient details')) { el.click(); return true; }
-                    }
-                    return false;
-                }"""
-            )
-            await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(1000)
+                if expanded: break
+            steps.append(f"patient-details-expanded={expanded}")
             shots.append(await _shot(page, "patient-expanded") or "")
         except Exception as e:
             steps.append(f"patient-expand-error: {e}")
 
-        # 5d. Fill patient name and (optionally) select the auto-suggested
-        # patient. Autocomplete-style: type name, wait, click first mat-option.
-        if patient:
-            name_filled = await _dlg_fill(r"name(?!.*supplier|.*stockist)|patient", patient[:20])
-            steps.append(f"patient-name-filled={name_filled}")
-            if name_filled:
-                await page.wait_for_timeout(1500)
-                try:
-                    await page.locator("mat-option").first.click(timeout=2000)
-                    steps.append("patient-autocomplete-picked")
-                except Exception:
-                    steps.append("patient-autocomplete-none")
-
-        # 5e. Patient quantity (some dialogs have a separate qty inside patient section)
-        if qty:
-            q2 = await _dlg_fill(r"^quantity$|patient.*qty|qty.*patient", str(qty))
-            steps.append(f"patient-qty-filled={q2}")
-
-        # 5f. Mobile
+        # 7. Patient Mobile (name='mob', placeholder='Patient Mobile') ----
+        # Fill mobile FIRST so the app can auto-search patient by mobile.
         if mobile:
-            m_ok = await _dlg_fill(r"mobile|phone|contact", mobile)
-            steps.append(f"patient-mobile-filled={m_ok}")
+            focused_mob = await _focus_dialog_field(page, r"\bpatient\s*mobile\b|\bmob\b")
+            steps.append(f"patient-mobile-focused={focused_mob}")
+            if focused_mob:
+                await page.keyboard.type(mobile, delay=80)
+                await page.wait_for_timeout(1800)
+                picked_mob = await _click_mat_option_matching(page, mobile, timeout_ms=1500, require_match=True)
+                steps.append(f"patient-mobile-autocomplete-picked={picked_mob}")
 
-        # 5g. Advance payment
+        # 8. Patient Name (name='pat', placeholder='Patient Name'). Initially
+        # disabled — becomes editable once mobile is entered. Type via
+        # keyboard so autocomplete fires; if no match, force the final value
+        # via JS setter (Angular tends to clear the field when focus is lost).
+        if patient:
+            focused_p = await _focus_dialog_field(page, r"\bpatient\s*name\b|\bpat\b", force_enable=True)
+            steps.append(f"patient-name-focused={focused_p}")
+            if focused_p:
+                await page.keyboard.type(patient, delay=90)
+                await page.wait_for_timeout(1500)
+                picked_p = await _click_mat_option_matching(page, patient, timeout_ms=1500, require_match=True)
+                steps.append(f"patient-autocomplete-picked={picked_p}")
+                if not picked_p:
+                    # No autocomplete match — force-set the value via JS to
+                    # ensure it persists after focus loss (Angular reactive
+                    # form controls sometimes reset disabled fields on blur).
+                    forced = await page.evaluate(
+                        """(v) => {
+                            const el = document.querySelector('input[name="pat"]');
+                            if (!el) return false;
+                            if (el.disabled) { el.disabled = false; el.removeAttribute('disabled'); }
+                            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                            setter.call(el, String(v));
+                            ['input','change','keyup','blur'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
+                            return true;
+                        }""",
+                        patient,
+                    )
+                    steps.append(f"patient-name-forced={forced}")
+
+        # 9. Quantity (name='qty', placeholder='Quantity') — inside patient section.
+        # Match by EXACT placeholder 'Quantity' or EXACT name 'qty' to avoid
+        # colliding with 'Enter Suggested Qty' (which contains 'Qty').
+        if qty:
+            q2 = await page.evaluate(
+                """(q) => {
+                    const el = document.querySelector('input[name="qty"]');
+                    if (!el) return false;
+                    if (el.disabled) { el.disabled = false; el.removeAttribute('disabled'); }
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    try { el.focus(); } catch(_) {}
+                    setter.call(el, String(q));
+                    ['input','change','keyup','blur'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
+                    return true;
+                }""",
+                str(qty),
+            )
+            steps.append(f"patient-qty-filled={bool(q2)}")
+
+        # 10. Advance Payment (name='payment', placeholder='Advance Payment')
         if advance:
-            a_ok = await _dlg_fill(r"advance", str(advance))
-            steps.append(f"patient-advance-filled={a_ok}")
+            a_ok = await page.evaluate(
+                """(v) => {
+                    const el = document.querySelector('input[name="payment"]');
+                    if (!el) return false;
+                    if (el.disabled) { el.disabled = false; el.removeAttribute('disabled'); }
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    try { el.focus(); } catch(_) {}
+                    setter.call(el, String(v));
+                    ['input','change','keyup','blur'].forEach(t => el.dispatchEvent(new Event(t, {bubbles:true})));
+                    return true;
+                }""",
+                str(advance),
+            )
+            steps.append(f"patient-advance-filled={bool(a_ok)}")
 
         shots.append(await _shot(page, "dialog-filled") or "")
 
-        # 6. Click "Add to PO" or "Save" button inside the Order Details dialog
+        # 11. Click "Add to PO" --------------------------------------
         clicked_add = False
-        for label_rx in [r"^Add to PO$", r"Add\s*to\s*PO", r"^Save$", r"^Confirm$", r"^OK$", r"^Update$"]:
-            try:
-                await page.locator(f"mat-dialog-container button, .mat-mdc-dialog-container button").filter(has_text=re.compile(label_rx, re.I)).first.click(timeout=2000)
+        for label_rx in [r"^Add\s*to\s*PO$", r"Add\s*To\s*PO", r"Add\s*to\s*PO"]:
+            if await _click_button_matching(page, label_rx, in_dialog=True):
                 clicked_add = True
                 break
-            except Exception:
-                continue
-        if not clicked_add:
-            # fallback: click ANY button that reads Add / Save
-            try:
-                await page.evaluate("""() => {
-                    const dlg = document.querySelector('mat-dialog-container, .mat-mdc-dialog-container, .cdk-overlay-pane') || document;
-                    for (const b of dlg.querySelectorAll('button')) {
-                        const t = (b.innerText || '').trim().toLowerCase();
-                        if (/^(add to po|save|confirm|ok|update)/.test(t)) { b.click(); return true; }
-                    }
-                    return false;
-                }""")
-                clicked_add = True
-            except Exception:
-                pass
         steps.append(f"add-to-po-clicked={clicked_add}")
-        await page.wait_for_timeout(4500)
-        shots.append(await _shot(page, "after-add-to-po") or "")
-
         if not clicked_add:
+            shots.append(await _shot(page, "no-add-button") or "")
             return {"ok": False, "error": "Could not click 'Add to PO' button", "screenshots": shots, "steps": steps}
+
+        # 12. Handle "Create Account" warning for new patients ---------
+        await page.wait_for_timeout(2500)
+        shots.append(await _shot(page, "post-add-to-po") or "")
+
+        # A warning dialog may open ("Patient does not exist — Create
+        # Account?"). Click "Create Account" / "Yes" / "Ok" to confirm.
+        created_ok = False
+        for label_rx in [r"create\s*account", r"^create$", r"^yes$", r"^ok$", r"^confirm$", r"^proceed$"]:
+            if await _click_button_matching(page, label_rx, in_dialog=True):
+                created_ok = True
+                break
+            if await _click_button_matching(page, label_rx, in_dialog=False):
+                created_ok = True
+                break
+        if created_ok:
+            steps.append("create-account-warning-confirmed")
+            await page.wait_for_timeout(3000)
+            shots.append(await _shot(page, "after-create-account") or "")
+        else:
+            steps.append("no-create-account-warning (existing patient or auto-dismissed)")
+
+        # 13. Final settle screenshot -------------------------------
+        await page.wait_for_timeout(2500)
+        shots.append(await _shot(page, "po-final") or "")
 
         return {"ok": True, "screenshots": shots, "steps": steps}
     except Exception as e:
