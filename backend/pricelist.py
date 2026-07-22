@@ -186,6 +186,51 @@ def detect_distributor(filename: str, sample_text: str, known: List[Dict[str, An
 
 # ------------ File parsing ------------
 
+def _find_header_row(rows: List[List[str]]) -> int:
+    """Scan the first ~20 rows and pick the one that most looks like a
+    header — the first row where at least 3 cells are non-empty short
+    strings that don't parse as numbers AND aren't pandas' 'Unnamed:'
+    placeholder from an earlier read.
+    """
+    def is_real_label(cell: str) -> bool:
+        s = str(cell).strip()
+        if not s: return False
+        if s.lower().startswith("unnamed"): return False
+        if s.lower() in ("nan", "none", "null"): return False
+        try:
+            float(s.replace(",", ""))
+            return False   # numeric — not a label
+        except Exception:
+            return True
+
+    for idx in range(min(20, len(rows))):
+        r = rows[idx]
+        labels = [c for c in r if is_real_label(c)]
+        if len(labels) >= 3:
+            return idx
+    return 0
+
+
+def _reheader(df: pd.DataFrame) -> pd.DataFrame:
+    """If the raw DataFrame has mostly-blank / Unnamed: columns (i.e. the
+    real header wasn't on row 1), scan the body for a plausible header row
+    and promote it. Silently returns df unchanged if headers look fine."""
+    good_hdrs = [c for c in df.columns if str(c).strip() and not str(c).lower().startswith("unnamed")]
+    if len(good_hdrs) >= 3:
+        # Headers look OK — just drop the empty/unnamed columns.
+        return df.loc[:, good_hdrs]
+    # Otherwise: read raw rows and find the header inside.
+    rows = [df.columns.tolist()] + df.values.tolist()
+    rows = [[("" if c is None else str(c)) for c in r] for r in rows]
+    hdr_idx = _find_header_row(rows)
+    header = [str(x).strip() or f"col_{i+1}" for i, x in enumerate(rows[hdr_idx])]
+    body = rows[hdr_idx + 1:]
+    # Normalise width
+    width = len(header)
+    body = [(r + [""] * width)[:width] for r in body]
+    return pd.DataFrame(body, columns=header)
+
+
 def _parse_xls_or_csv(data: bytes, filename: str) -> pd.DataFrame:
     lower = filename.lower()
     bio = io.BytesIO(data)
@@ -327,8 +372,11 @@ def register_routes(api_router: APIRouter, db) -> None:
         if df.empty:
             raise HTTPException(400, "File contains no data rows")
 
-        # Drop unnamed / empty columns
-        df = df.loc[:, [c for c in df.columns if str(c).strip() and not str(c).lower().startswith("unnamed")]]
+        # Smart header detection — if the first row isn't a real header
+        # (e.g. file starts with a title / blank row), scan for it.
+        df = _reheader(df)
+        if len(df.columns) == 0:
+            raise HTTPException(400, "Could not detect column headers. Please open the file, ensure row 1 has column names (Product, MRP, Rate, etc.), and re-save.")
         headers = [str(c) for c in df.columns]
 
         # Auto-detect distributor
