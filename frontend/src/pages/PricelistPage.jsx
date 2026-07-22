@@ -151,9 +151,11 @@ const ManageTab = () => {
   const [summary, setSummary] = useState({ total_rows: 0, distributors: [] });
   const [distributors, setDistributors] = useState([]);
   const [uploading, setUploading] = useState(false);
-  const [uploadResp, setUploadResp] = useState(null); // { token, headers, preview, mapping_*, detected_distributor, rows, filename }
+  const [uploadPct, setUploadPct] = useState(0);   // 0-100 during transfer
+  const [uploadStage, setUploadStage] = useState(''); // 'transfer' | 'parse'
+  const [uploadResp, setUploadResp] = useState(null);
   const [chosenDistId, setChosenDistId] = useState('');
-  const [mapping, setMapping] = useState({}); // { product: 'ColA', ... }
+  const [mapping, setMapping] = useState({});
   const [confirming, setConfirming] = useState(false);
   const mappingRef = useRef(null);
 
@@ -168,27 +170,27 @@ const ManageTab = () => {
     if (!file) return;
     const okExt = /\.(xlsx|xls|csv|pdf)$/i.test(file.name);
     if (!okExt) { toast.error('Please pick a .xlsx, .xls, .csv, or .pdf file'); return; }
-    setUploading(true);
-    setUploadResp(null);
+    setUploading(true); setUploadResp(null); setUploadPct(0); setUploadStage('transfer');
     try {
-      const r = await PricelistAPI.upload(file);
+      const r = await PricelistAPI.upload(file, ({ percent }) => {
+        setUploadPct(percent);
+        if (percent >= 100) setUploadStage('parse');
+      });
       setUploadResp(r);
-      // Prefer previously-saved mapping over auto-suggested
       setMapping(r.mapping_saved || r.mapping_suggested || {});
       setChosenDistId(r.detected_distributor?.id || '');
       if (!r.detected_distributor) {
-        toast.info('Distributor not auto-detected — please pick it manually below');
+        toast.info(`Parsed ${r.rows} rows. Please pick the distributor below.`);
       } else {
-        toast.success(`Detected: ${r.detected_distributor.name} — scroll down & click SAVE`);
+        toast.success(`${r.rows} rows parsed · ${r.detected_distributor.name} · scroll down & click SAVE`);
       }
-      // Scroll to the mapping wizard so the user sees the required next step
       setTimeout(() => {
         try { mappingRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
       }, 150);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Upload failed');
+      toast.error(e?.response?.data?.detail || e?.message || 'Upload failed');
     } finally {
-      setUploading(false);
+      setUploading(false); setUploadStage(''); setUploadPct(0);
     }
   };
 
@@ -235,14 +237,35 @@ const ManageTab = () => {
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) onFile(f); }}
-          className={`flex flex-col items-center justify-center py-10 px-4 border-2 border-dashed rounded-sm cursor-pointer transition-colors ${dragOver ? 'border-emerald-600 bg-emerald-50' : 'border-neutral-300 hover:border-emerald-500'}`}
+          className={`flex flex-col items-center justify-center py-8 px-4 border-2 border-dashed rounded-sm cursor-pointer transition-colors ${dragOver ? 'border-emerald-600 bg-emerald-50' : 'border-neutral-300 hover:border-emerald-500'}`}
           data-testid="pricelist-dropzone"
         >
-          <Upload className="w-6 h-6 text-emerald-600 mb-2" />
-          <div className="text-[12px] font-bold mono-track-wide">
-            {uploading ? 'PARSING FILE…' : 'DROP OR CLICK TO UPLOAD PRICE LIST'}
-          </div>
-          <div className="text-[10px] text-neutral-500 mt-1 mono-track-tight">.XLSX · .XLS · .CSV · NATIVE PDF</div>
+          {uploading ? (
+            <div className="w-full max-w-xs flex flex-col items-center">
+              <Loader2 className="w-6 h-6 text-emerald-600 animate-spin mb-2" />
+              <div className="text-[12px] mono-track-wide font-bold text-emerald-700">
+                {uploadStage === 'transfer' && `UPLOADING ${uploadPct}%`}
+                {uploadStage === 'parse' && 'PARSING FILE ON SERVER…'}
+                {!uploadStage && 'PREPARING…'}
+              </div>
+              {uploadStage === 'transfer' && (
+                <div className="w-full h-1.5 bg-neutral-200 rounded-full mt-2 overflow-hidden">
+                  <div className="h-full bg-emerald-600 transition-all" style={{ width: `${uploadPct}%` }} />
+                </div>
+              )}
+              {uploadStage === 'parse' && (
+                <div className="text-[10px] mono-track-tight text-neutral-500 mt-1 text-center">
+                  Large files may take a minute · Please don't close this tab
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <Upload className="w-6 h-6 text-emerald-600 mb-2" />
+              <div className="text-[12px] font-bold mono-track-wide">DROP OR CLICK TO UPLOAD PRICE LIST</div>
+              <div className="text-[10px] text-neutral-500 mt-1 mono-track-tight">.XLSX · .XLS · .CSV · NATIVE PDF · UP TO 100K ROWS</div>
+            </>
+          )}
           <input
             type="file"
             accept=".xlsx,.xls,.csv,.pdf"

@@ -118,7 +118,9 @@ export const OrderAPI = {
 export const PricelistAPI = {
   // Multipart upload; returns { token, headers, preview, mapping_suggested,
   //                             mapping_saved, detected_distributor, rows }
-  upload: (file) => {
+  // onUploadProgress? — called with { loaded, total, percent } during the
+  // multipart file transfer (before the server-side parse begins).
+  upload: (file, onUploadProgress) => {
     const fd = new FormData();
     fd.append('file', file);
     // NOTE: We intentionally DO NOT set the Content-Type header here.
@@ -127,10 +129,14 @@ export const PricelistAPI = {
     // 'multipart/form-data; boundary=...'  header.
     return api.post('/pricelist/upload', fd, {
       headers: { 'Content-Type': undefined },
-      timeout: 300000,
+      timeout: 600000,
+      onUploadProgress: onUploadProgress ? (e) => {
+        const total = e.total || file.size || 1;
+        onUploadProgress({ loaded: e.loaded, total, percent: Math.round((e.loaded / total) * 100) });
+      } : undefined,
     }).then((r) => r.data);
   },
-  confirm: (payload) => api.post('/pricelist/confirm', payload).then((r) => r.data),
+  confirm: (payload) => api.post('/pricelist/confirm', payload, { timeout: 600000 }).then((r) => r.data),
   search:  (q) => api.get('/pricelist/search', { params: { q } }).then((r) => r.data),
   summary: () => api.get('/pricelist/summary').then((r) => r.data),
   clear:   (distId) => api.delete(`/pricelist/distributor/${distId}`).then((r) => r.data),

@@ -350,8 +350,18 @@ def register_routes(api_router: APIRouter, db) -> None:
                 "source_upload": upload_id,
                 "uploaded_at": now,
             })
-        if docs:
-            await db.pricelist_rows.insert_many(docs)
+        # Chunk inserts so 100k-row uploads don't stall the driver
+        CHUNK = 5000
+        inserted = 0
+        for i in range(0, len(docs), CHUNK):
+            await db.pricelist_rows.insert_many(docs[i:i + CHUNK], ordered=False)
+            inserted += len(docs[i:i + CHUNK])
+
+        # Ensure fast lookup at any scale — indexes are idempotent, cheap to
+        # re-declare, and only actually built once.
+        await db.pricelist_rows.create_index("product_norm")
+        await db.pricelist_rows.create_index("distributor_id")
+        await db.pricelist_rows.create_index([("distributor_id", 1), ("product_norm", 1)])
 
         # Record the upload
         await db.pricelist_uploads.insert_one({
