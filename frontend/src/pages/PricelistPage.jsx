@@ -177,7 +177,19 @@ const ManageTab = () => {
         if (percent >= 100) setUploadStage('parse');
       });
       setUploadResp(r);
-      setMapping(r.mapping_saved || r.mapping_suggested || {});
+      // Merge saved + suggested mappings so we NEVER carry over a saved
+      // column name that no longer exists in this file's headers. For each
+      // field, prefer saved-and-valid, then auto-suggested, then null.
+      const headers = new Set(r.headers || []);
+      const suggested = r.mapping_suggested || {};
+      const saved = r.mapping_saved || {};
+      const merged = {};
+      for (const f of ['product', 'company', 'pack', 'mrp', 'ptr', 'scheme']) {
+        const s = saved[f];
+        const a = suggested[f];
+        merged[f] = (s && headers.has(s)) ? s : (a && headers.has(a) ? a : null);
+      }
+      setMapping(merged);
       setChosenDistId(r.detected_distributor?.id || '');
       if (!r.detected_distributor) {
         toast.info(`Parsed ${r.rows} rows. Please pick the distributor below.`);
