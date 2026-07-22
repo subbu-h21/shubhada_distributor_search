@@ -22,18 +22,64 @@ MongoDB collections used:
 """
 from __future__ import annotations
 import io
+import os
+import pickle
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-# In-memory cache of "pending uploads" awaiting user confirmation of the
-# column mapping. Keyed by a short token returned to the frontend.
-_PENDING: Dict[str, Dict[str, Any]] = {}
+# Pending uploads awaiting user confirmation of the column mapping.
+# We persist the parsed DataFrame to disk (as a lightweight pickle) so a
+# backend restart during file review does NOT lose the user's work — a
+# critical protection for large uploads that take time to finalise.
+_PENDING_DIR = Path(os.environ.get("PRICELIST_PENDING_DIR", str(Path(__file__).parent / "data/pricelist_pending")))
+_PENDING_DIR.mkdir(parents=True, exist_ok=True)
+_PENDING_TTL_SECS = 3600  # 1 hour
+
+
+def _pending_path(token: str) -> Path:
+    # Basic guard: 12-hex only
+    if not re.fullmatch(r"[a-f0-9]+", token or ""):
+        raise HTTPException(400, "Invalid token")
+    return _PENDING_DIR / f"{token}.pkl"
+
+
+def _pending_save(token: str, df: pd.DataFrame, filename: str) -> None:
+    payload = {"df": df, "filename": filename, "saved_at": datetime.now(timezone.utc)}
+    with _pending_path(token).open("wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _pending_load(token: str) -> Optional[Dict[str, Any]]:
+    p = _pending_path(token)
+    if not p.exists(): return None
+    with p.open("rb") as f:
+        payload = pickle.load(f)
+    return payload
+
+
+def _pending_delete(token: str) -> None:
+    p = _pending_path(token)
+    if p.exists():
+        try: p.unlink()
+        except Exception: pass
+
+
+def _pending_gc() -> None:
+    """Sweep pending uploads older than TTL. Called on each new upload."""
+    now = datetime.now(timezone.utc).timestamp()
+    for p in _PENDING_DIR.glob("*.pkl"):
+        try:
+            if now - p.stat().st_mtime > _PENDING_TTL_SECS:
+                p.unlink()
+        except Exception:
+            pass
 
 
 # ------------ Canonical helpers ------------
@@ -300,8 +346,9 @@ def register_routes(api_router: APIRouter, db) -> None:
             if saved:
                 saved_mapping = saved.get("columns")
 
+        _pending_gc()
         token = uuid.uuid4().hex[:12]
-        _PENDING[token] = {"df_json": df.to_json(orient="split"), "filename": file.filename}
+        _pending_save(token, df, file.filename)
 
         return {
             "token": token,
@@ -317,7 +364,7 @@ def register_routes(api_router: APIRouter, db) -> None:
     @api_router.post("/pricelist/confirm")
     async def pricelist_confirm(payload: ConfirmRequest):
         """Step 2: apply confirmed mapping → replace this distributor's rows."""
-        pending = _PENDING.pop(payload.token, None)
+        pending = _pending_load(payload.token)
         if not pending:
             raise HTTPException(400, "Upload session expired. Please re-upload the file.")
         if not payload.distributor_id:
@@ -328,8 +375,7 @@ def register_routes(api_router: APIRouter, db) -> None:
         if not dist:
             raise HTTPException(404, "Distributor not found")
 
-        df = pd.read_json(io.StringIO(pending["df_json"]), orient="split", dtype=str)
-        df = df.fillna("")
+        df = pending["df"].fillna("")
 
         rows = normalise_rows(df, payload.mapping)
         if not rows:
@@ -380,6 +426,9 @@ def register_routes(api_router: APIRouter, db) -> None:
                 {"$set": {"columns": payload.mapping, "updated_at": now}},
                 upsert=True,
             )
+
+        # Cleanup: pending upload is done — remove the on-disk temp file
+        _pending_delete(payload.token)
 
         return {
             "ok": True,
