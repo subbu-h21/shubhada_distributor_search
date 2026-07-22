@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import SearchPage from './pages/SearchPage';
 import PortalsPage from './pages/PortalsPage';
 import HistoryPage from './pages/HistoryPage';
+import PricelistPage from './pages/PricelistPage';
 import LoginPage from './pages/LoginPage';
 import { AppProvider } from './context/AppContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -32,6 +33,7 @@ const AppShell = () => {
           <Routes>
             <Route path="/" element={<Navigate to="/search" replace />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/pricelist" element={<PricelistPage />} />
             <Route path="/portals" element={<PortalsPage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="*" element={<Navigate to="/search" replace />} />

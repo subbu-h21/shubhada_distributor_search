@@ -112,4 +112,24 @@ export const OrderAPI = {
   },
 };
 
+// -----------------------------------------------------------------
+// Price-List Vault — upload distributor pricelists, search across them
+// -----------------------------------------------------------------
+export const PricelistAPI = {
+  // Multipart upload; returns { token, headers, preview, mapping_suggested,
+  //                             mapping_saved, detected_distributor, rows }
+  upload: (file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return api.post('/pricelist/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000,
+    }).then((r) => r.data);
+  },
+  confirm: (payload) => api.post('/pricelist/confirm', payload).then((r) => r.data),
+  search:  (q) => api.get('/pricelist/search', { params: { q } }).then((r) => r.data),
+  summary: () => api.get('/pricelist/summary').then((r) => r.data),
+  clear:   (distId) => api.delete(`/pricelist/distributor/${distId}`).then((r) => r.data),
+};
+
 export default api;

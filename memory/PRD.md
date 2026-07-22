@@ -67,21 +67,19 @@ with screenshots.
   - **Multi-stage screenshotting during search** (SUNSHOP).
   - **Combo-drug intelligence**: `X/Y`, `X-Y`, and `X Y` unified.
 - **2026-07-15 (this session)**:
-  - **Shubhada Auto-PO Placement (`/api/order/place`) — END-TO-END WORKING**. Playwright automates the full purchase-order flow on `https://shubhadahealth.com:7007`:
-    1. Login `9448188002/Q` → Re-Ordering Process tile.
-    2. Clicks the **"Add New Medicine"** link (NOT the top #srch_prd Order Entry search) — opens empty Order Details dialog.
-    3. Types product into the dialog's own `Product` input (name=`sprd`).
-    4. Types **first 4 letters** of the supplier into Stockist/Supplier → mat-autocomplete → picks the matching option.
-    5. Sets Enter Suggested Qty (force-enables the disabled input).
-    6. Expands the Patient Details `mat-expansion-panel-header` (by `aria-expanded` check, retries).
-    7. Fills Patient Mobile (name=`mob`) → auto-search picks existing patient if match.
-    8. Fills Patient Name (name=`pat`) — force-enabled, keyboard-typed for autocomplete, JS-forced if no match.
-    9. Fills Quantity (name=`qty`) and Advance Payment (name=`payment`).
-    10. Clicks **Add To PO**.
-    11. Handles the "**No Patient Found — Created Account / Leave it**" warning by clicking **Created Account** (regex `created?\s*account`).
-  - **Async task pattern** (`POST /api/order/place` returns `{task_id}` immediately; frontend polls `GET /api/order/status/{task_id}`) — bypasses Cloudflare's ~100s edge timeout. Verified via curl end-to-end (75s completion).
-  - **Frontend**: `OrderAPI.placeAndWait()` helper does submit + poll with elapsed-time indicator. `AddToOrderSheet.jsx` shows `PLACING ORDER… (Ns)` while polling.
-  - Verified visually: ROSUVAS F 10 / NEUROBION FORTE / DOLO 650 all landed on the Saved PO table with supplier SAROJ PHARMA and qty 2 / advance 25.
+  - **Shubhada Auto-PO Placement (`/api/order/place`) — END-TO-END WORKING** with async task pattern (`{task_id}` + polling), bypassing Cloudflare timeout.
+  - **New photorealistic Hanumanji hero banner** during extraction (Nano Banana generated). Reusable script at `/app/backend/scripts/generate_hanuman_hero.py`.
+  - **Distributor Price-List Vault** — brand-new additive feature (does not touch live extraction).
+    - Upload `.xlsx / .xls / .csv / native-PDF` price lists.
+    - Auto-detects the distributor from filename/content using distinctive tokens (ignores generic words like PHARMA, MEDICAL, AGENCIES).
+    - Auto-detects columns for Product / Company / Pack / MRP / PTR / Scheme.
+    - Column-mapping wizard shown on first upload from a distributor — saved as `pricelist_mappings` for zero-click re-uploads.
+    - Deduplicates by canonical product name (`DOLO 650MG (15S)` = `Dolo-650`).
+    - REPLACE semantics — new upload wipes old rows for that distributor.
+    - Search `/api/pricelist/search?q=X` returns grouped results with **cheapest PTR highlighted**, last-updated timestamps, and one-click **"ORDER"** button that opens the existing Shubhada Add-to-Order flow.
+    - New page `/pricelist` in the frontend (2 tabs: SEARCH & MANAGE UPLOADS). New nav item **PRICELISTS**. No existing pages modified.
+    - Backend: self-contained `/app/backend/pricelist.py` + 3 lines in `server.py` to register routes. Uses `pdfplumber` for native PDF tables.
+    - Verified end-to-end via curl with 2 mock files (SAROJ + HEGDE) — PROLOMET search returned both distributors sorted by cheapest PTR (HEGDE ₹49.80 first, SAROJ ₹52.17 next).
 
 ## Pending / Next Tasks
 - 🟠 **P1** — Refactor `server.py` (~1250 lines) into `routes/auth.py`, `routes/scraping.py`, `routes/orders.py`, `routes/sessions.py`.
@@ -110,6 +108,11 @@ with screenshots.
 - `GET  /api/history`, `GET /api/history/{id}`, `DELETE /api/history/{id}`
 - `POST /api/order/place` — start Shubhada PO placement, returns `{task_id, status:"running"}` (async).
 - `GET  /api/order/status/{task_id}` — poll for `{status:"done", ok, screenshots, steps}`.
+- `POST /api/pricelist/upload` — multipart file → returns `{token, headers, preview, mapping_suggested, mapping_saved, detected_distributor}`.
+- `POST /api/pricelist/confirm` — apply confirmed mapping → REPLACE distributor rows.
+- `GET  /api/pricelist/search?q=X` — grouped {product, distributors[sorted by cheapest_ptr]}.
+- `GET  /api/pricelist/summary` — per-distributor row counts & last-uploaded date.
+- `DELETE /api/pricelist/distributor/{id}` — wipe one distributor's rows.
 
 ## Testing
 - Backend: end-to-end curl tests passed for SUNSHOP, CHETHANA, LIVECONNECT (this session).

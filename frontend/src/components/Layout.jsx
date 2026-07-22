@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Search, Database, Clock, LogOut, User as UserIcon, KeyRound, Signal } from 'lucide-react';
+import { Search, Database, Clock, LogOut, User as UserIcon, KeyRound, Signal, FileSpreadsheet } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ChangePasswordSheet from './ChangePasswordSheet';
 import LiveconnectOtpSheet from './LiveconnectOtpSheet';
@@ -8,6 +8,7 @@ import RetailioOtpSheet from './RetailioOtpSheet';
 
 const NAV = [
   { to: '/search', label: 'SEARCH', Icon: Search },
+  { to: '/pricelist', label: 'PRICELISTS', Icon: FileSpreadsheet },
   { to: '/portals', label: 'PORTALS', Icon: Database },
   { to: '/history', label: 'HISTORY', Icon: Clock },
 ];
@@ -22,6 +23,7 @@ const Layout = ({ children }) => {
 
   const titles = {
     '/search': { title: 'SHUBHADA PHARMA SIRSI', subtitle: 'AI SEARCH \u00b7 DISTRIBUTOR AVAILABILITY' },
+    '/pricelist': { title: 'PRICE LISTS', subtitle: 'DISTRIBUTOR PRICE-LIST VAULT · INSTANT SEARCH' },
     '/portals': { title: 'PORTALS', subtitle: 'CONNECTED DISTRIBUTOR ENDPOINTS' },
     '/history': { title: 'HISTORY', subtitle: 'PREVIOUS EXTRACTION RUNS' },
   };

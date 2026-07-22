@@ -1012,6 +1012,13 @@ async def order_status(task_id: str):
     return {"task_id": task_id, "status": "done", **(t.get("result") or {})}
 
 
+# ============================================================
+# Price-list vault (bulk-upload distributor pricelists → searchable)
+# ============================================================
+from pricelist import register_routes as _register_pricelist_routes  # noqa: E402
+_register_pricelist_routes(api_router, db)
+
+
 @api_router.post("/products/upload")
 async def products_upload(file: UploadFile = File(...)):
     """Accepts .xlsx or .csv, extracts columns matching Product Name / Pack / Strength / MRP / Manufacturer / Code."""
