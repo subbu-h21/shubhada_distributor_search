@@ -121,8 +121,12 @@ export const PricelistAPI = {
   upload: (file) => {
     const fd = new FormData();
     fd.append('file', file);
+    // NOTE: We intentionally DO NOT set the Content-Type header here.
+    // The axios instance has a default 'application/json' — passing
+    // `undefined` lets the browser auto-generate the correct
+    // 'multipart/form-data; boundary=...'  header.
     return api.post('/pricelist/upload', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      headers: { 'Content-Type': undefined },
       timeout: 300000,
     }).then((r) => r.data);
   },

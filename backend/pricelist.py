@@ -145,8 +145,28 @@ def _parse_xls_or_csv(data: bytes, filename: str) -> pd.DataFrame:
     bio = io.BytesIO(data)
     if lower.endswith(".csv"):
         return pd.read_csv(bio, dtype=str, keep_default_na=False)
-    # For excel, sniff engine
-    return pd.read_excel(bio, dtype=str, engine=None)
+    # Pick the correct Excel engine explicitly — `engine=None` fails when
+    # the file magic-bytes are ambiguous or non-standard.
+    if lower.endswith(".xls"):
+        # Old binary Excel 97-2003 → xlrd
+        try:
+            return pd.read_excel(bio, dtype=str, engine="xlrd")
+        except Exception:
+            bio.seek(0)
+    if lower.endswith(".xlsx"):
+        try:
+            return pd.read_excel(bio, dtype=str, engine="openpyxl")
+        except Exception:
+            bio.seek(0)
+    # Fallback: try both engines in turn, then let pandas throw a clean
+    # error for the user.
+    for eng in ("openpyxl", "xlrd", None):
+        try:
+            bio.seek(0)
+            return pd.read_excel(bio, dtype=str, engine=eng)
+        except Exception:
+            continue
+    raise HTTPException(400, "Unable to read this Excel file. Please re-save as .xlsx (Excel 2007+ format) and try again.")
 
 
 def _parse_pdf(data: bytes) -> pd.DataFrame:

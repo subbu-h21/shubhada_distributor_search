@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, Search, Trash2, Loader2, CheckCircle2, AlertTriangle, Database, Building2, MapPin, Tag, ShoppingCart, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Upload, Search, Trash2, Loader2, CheckCircle2, AlertTriangle, Database, Building2, MapPin, Tag, ShoppingCart, X, ArrowDown } from 'lucide-react';
 import { PricelistAPI, DistributorsAPI } from '../lib/api';
 import { toast } from 'sonner';
 import AddToOrderSheet from '../components/AddToOrderSheet';
@@ -155,6 +155,7 @@ const ManageTab = () => {
   const [chosenDistId, setChosenDistId] = useState('');
   const [mapping, setMapping] = useState({}); // { product: 'ColA', ... }
   const [confirming, setConfirming] = useState(false);
+  const mappingRef = useRef(null);
 
   const refresh = async () => {
     const [s, d] = await Promise.all([PricelistAPI.summary(), DistributorsAPI.list()]);
@@ -178,8 +179,12 @@ const ManageTab = () => {
       if (!r.detected_distributor) {
         toast.info('Distributor not auto-detected — please pick it manually below');
       } else {
-        toast.success(`Detected: ${r.detected_distributor.name}`);
+        toast.success(`Detected: ${r.detected_distributor.name} — scroll down & click SAVE`);
       }
+      // Scroll to the mapping wizard so the user sees the required next step
+      setTimeout(() => {
+        try { mappingRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+      }, 150);
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Upload failed');
     } finally {
@@ -251,7 +256,12 @@ const ManageTab = () => {
 
       {/* Mapping wizard */}
       {uploadResp && (
-        <div className="border-2 border-emerald-600 rounded-sm bg-white" data-testid="pricelist-mapping-panel">
+        <div ref={mappingRef} className="border-2 border-emerald-600 rounded-sm bg-white shadow-lg" data-testid="pricelist-mapping-panel">
+          {/* Step indicator banner */}
+          <div className="bg-emerald-600 text-white px-4 py-2 flex items-center gap-2">
+            <ArrowDown className="w-4 h-4 animate-bounce" />
+            <div className="text-[11px] mono-track-wide font-bold flex-1">STEP 2 OF 2 · REVIEW & SAVE TO VAULT</div>
+          </div>
           <div className="px-4 py-3 border-b border-emerald-200 flex items-start gap-3">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5" />
             <div className="flex-1 min-w-0">
