@@ -7,6 +7,7 @@ import { Eye, EyeOff, Loader2, ShieldCheck, ShieldAlert } from 'lucide-react';
 
 const PORTAL_TYPES = [
   { value: 'SUNSHOP', label: 'SUNSHOP', hint: 'Real adapter available' },
+  { value: 'MARG', label: 'MARG', hint: 'MARG eRetail — shared OTP session' },
   { value: 'GENERIC', label: 'GENERIC', hint: 'Heuristic — works on many portals' },
 ];
 

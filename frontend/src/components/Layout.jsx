@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import ChangePasswordSheet from './ChangePasswordSheet';
 import LiveconnectOtpSheet from './LiveconnectOtpSheet';
 import RetailioOtpSheet from './RetailioOtpSheet';
+import MargOtpSheet from './MargOtpSheet';
 
 const NAV = [
   { to: '/search', label: 'SEARCH', Icon: Search },
@@ -20,6 +21,7 @@ const Layout = ({ children }) => {
   const [cpOpen, setCpOpen] = useState(false);
   const [lcOpen, setLcOpen] = useState(false);
   const [rioOpen, setRioOpen] = useState(false);
+  const [margOpen, setMargOpen] = useState(false);
 
   const titles = {
     '/search': { title: 'SHUBHADA PHARMA SIRSI', subtitle: 'AI SEARCH \u00b7 DISTRIBUTOR AVAILABILITY' },
@@ -81,6 +83,11 @@ const Layout = ({ children }) => {
                       data-testid="menu-retailio-btn">
                       <Signal className="w-3.5 h-3.5" /> RETAILIO SESSION
                     </button>
+                    <button type="button" onClick={() => { setMenuOpen(false); setMargOpen(true); }}
+                      className="w-full text-left px-3 py-2.5 flex items-center gap-2 text-[12px] mono-track-tight hover:bg-emerald-50 border-b border-neutral-100"
+                      data-testid="menu-marg-btn">
+                      <Signal className="w-3.5 h-3.5" /> MARG SESSION
+                    </button>
                     <button type="button" onClick={() => { setMenuOpen(false); setCpOpen(true); }}
                       className="w-full text-left px-3 py-2.5 flex items-center gap-2 text-[12px] mono-track-tight hover:bg-emerald-50 border-b border-neutral-100">
                       <KeyRound className="w-3.5 h-3.5" /> CHANGE PASSWORD
@@ -123,6 +130,7 @@ const Layout = ({ children }) => {
       <ChangePasswordSheet open={cpOpen} onOpenChange={setCpOpen} />
       <LiveconnectOtpSheet open={lcOpen} onOpenChange={setLcOpen} />
       <RetailioOtpSheet open={rioOpen} onOpenChange={setRioOpen} />
+      <MargOtpSheet open={margOpen} onOpenChange={setMargOpen} />
     </div>
   );
 };

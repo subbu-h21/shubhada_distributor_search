@@ -94,6 +94,13 @@ export const RetailioAPI = {
   clear: () => api.delete('/retailio/session').then((r) => r.data),
 };
 
+export const MargAPI = {
+  status: () => api.get('/marg/session').then((r) => r.data),
+  begin: (mobile) => api.post('/marg/session/begin', { mobile }).then((r) => r.data),
+  verify: (pendingId, otp) => api.post('/marg/session/verify', { pendingId, otp }).then((r) => r.data),
+  clear: () => api.delete('/marg/session').then((r) => r.data),
+};
+
 export const OrderAPI = {
   place: (payload) => api.post('/order/place', payload).then((r) => r.data),
   status: (taskId) => api.get(`/order/status/${taskId}`).then((r) => r.data),

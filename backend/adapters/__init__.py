@@ -5,6 +5,7 @@ from .liveconnect import LiveconnectAdapter
 from .vardhaman import VardhamanAdapter
 from .retailio import RetailioAdapter
 from .yashika import YashikaAdapter
+from .marg import MargAdapter
 from .generic import GenericAdapter
 
 
@@ -25,7 +26,9 @@ def get_adapter(portal_type: str, **kwargs) -> BaseAdapter:
         )
     if pt == "YASHIKA":
         return YashikaAdapter()
+    if pt == "MARG":
+        return MargAdapter(cookies=kwargs.get("marg_cookies"))
     return GenericAdapter()
 
 
-__all__ = ["BaseAdapter", "ExtractionOutcome", "SunshopAdapter", "ChethanaAdapter", "LiveconnectAdapter", "VardhamanAdapter", "RetailioAdapter", "YashikaAdapter", "GenericAdapter", "get_adapter"]
+__all__ = ["BaseAdapter", "ExtractionOutcome", "SunshopAdapter", "ChethanaAdapter", "LiveconnectAdapter", "VardhamanAdapter", "RetailioAdapter", "YashikaAdapter", "MargAdapter", "GenericAdapter", "get_adapter"]

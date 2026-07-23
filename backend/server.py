@@ -165,6 +165,8 @@ def infer_portal_type(portal: str) -> str:
         return "RETAILIO"
     if "YASHIKA" in p:
         return "YASHIKA"
+    if "MARG" in p:
+        return "MARG"
     return "GENERIC"
 
 
@@ -261,6 +263,7 @@ async def seed_if_empty():
             Portal(name="VARDHAMAN", baseUrl="http://easysol.co.in", status="ACTIVE", description="Vardhaman medisales portal (adapter pending)"),
             Portal(name="MEDPLUS", baseUrl="https://medplus.in", status="INACTIVE", description="MedPlus wholesale portal"),
             Portal(name="APOLLO", baseUrl="https://apollo.co.in", status="ACTIVE", description="Apollo pharmacy portal"),
+            Portal(name="MARG", baseUrl="https://margcompusoft.com/eRetail", status="ACTIVE", description="Marg eRetail aggregator — OTP session"),
         ]
         await db.portals.insert_many([p.dict() for p in portals])
         logger.info("Seeded portals")
@@ -492,7 +495,7 @@ async def test_login(tid: str):
             except Exception: pass
 
 
-async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[int], entry_id: str, liveconnect_cookies=None, retailio_cookies=None, retailio_local_storage=None, force_candidate_name: Optional[str] = None) -> Dict[str, Any]:
+async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[int], entry_id: str, liveconnect_cookies=None, retailio_cookies=None, retailio_local_storage=None, marg_cookies=None, force_candidate_name: Optional[str] = None) -> Dict[str, Any]:
     """Run a single distributor extraction and return a result dict (used by
     both /extract and /extract/manual-pick)."""
     tid = doc["id"]
@@ -518,6 +521,10 @@ async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[i
     elif portal_type == "RETAILIO":
         if not retailio_cookies:
             return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via RETAILIO SESSION menu"}}
+        password = None
+    elif portal_type == "MARG":
+        if not marg_cookies:
+            return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "SESSION_EXPIRED — please authenticate via MARG SESSION menu"}}
         password = None
     elif not doc.get("username") or not doc.get("encryptedPassword"):
         return {**base, **{**empty_result, "status": "LOGIN_FAILED", "detail": "Credentials not set. Edit distributor to add username/password."}}
@@ -554,6 +561,7 @@ async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[i
             liveconnect_cookies=liveconnect_cookies,
             retailio_cookies=retailio_cookies,
             retailio_local_storage=retailio_local_storage,
+            marg_cookies=marg_cookies,
         )
         adapter.screenshotter = _shot
         outcome = await adapter.extract(page, url, doc.get("username") or "", password or "", product_upper, qty or 0, distributor_name=name, force_candidate_name=force_candidate_name)
@@ -608,6 +616,15 @@ async def run_extraction(payload: ExtractRequest):
         except Exception:
             retailio_cookies = None
 
+    # Preload MARG session (shared across all MARG targets)
+    marg_cookies = None
+    if any(d.get("portalType") == "MARG" or infer_portal_type(d.get("portal", "")) == "MARG" for d in docs):
+        try:
+            m_doc = await db.marg_session.find_one({"_id": "default"})
+            marg_cookies = (m_doc or {}).get("cookies")
+        except Exception:
+            marg_cookies = None
+
     try:
         browser = await _get_browser()
 
@@ -620,6 +637,7 @@ async def run_extraction(payload: ExtractRequest):
                     liveconnect_cookies=liveconnect_cookies,
                     retailio_cookies=retailio_cookies,
                     retailio_local_storage=retailio_local_storage,
+                    marg_cookies=marg_cookies,
                 )
 
         results = await asyncio.gather(*[_guarded(d) for d in docs])
@@ -675,6 +693,7 @@ async def extract_manual_pick(payload: ManualPickRequest):
     liveconnect_cookies = None
     retailio_cookies = None
     retailio_local_storage = None
+    marg_cookies = None
     ptype = doc.get("portalType") or infer_portal_type(doc.get("portal", ""))
     if ptype == "LIVECONNECT":
         try:
@@ -689,6 +708,12 @@ async def extract_manual_pick(payload: ManualPickRequest):
             retailio_local_storage = (r_doc or {}).get("localStorage")
         except Exception:
             pass
+    if ptype == "MARG":
+        try:
+            m_doc = await db.marg_session.find_one({"_id": "default"})
+            marg_cookies = (m_doc or {}).get("cookies")
+        except Exception:
+            pass
 
     browser = None
     try:
@@ -698,6 +723,7 @@ async def extract_manual_pick(payload: ManualPickRequest):
             liveconnect_cookies=liveconnect_cookies,
             retailio_cookies=retailio_cookies,
             retailio_local_storage=retailio_local_storage,
+            marg_cookies=marg_cookies,
             force_candidate_name=payload.candidate_name,
         )
     finally:
@@ -948,6 +974,54 @@ async def retailio_session_verify(payload: RioVerifyRequest):
 @api_router.delete("/retailio/session")
 async def retailio_session_clear():
     await _rio_manager.clear_session()
+    return {"ok": True}
+
+
+# ============================================================
+# MARG — OTP session (margcompusoft.com/eRetail)
+# ============================================================
+from marg_session import MargSessionManager  # noqa: E402
+_marg_manager = MargSessionManager(db, _get_browser)
+
+
+class MargBeginRequest(BaseModel):
+    mobile: str
+
+
+class MargVerifyRequest(BaseModel):
+    pendingId: str
+    otp: str
+
+
+@api_router.get("/marg/session")
+async def marg_session_status():
+    return await _marg_manager.get_status()
+
+
+@api_router.post("/marg/session/begin")
+async def marg_session_begin(payload: MargBeginRequest):
+    mob = (payload.mobile or "").strip()
+    if not mob or not mob.isdigit() or len(mob) < 10:
+        raise HTTPException(400, "Enter a valid 10-digit mobile number")
+    res = await _marg_manager.begin(mob)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "Could not send OTP")
+    return res
+
+
+@api_router.post("/marg/session/verify")
+async def marg_session_verify(payload: MargVerifyRequest):
+    if not payload.pendingId or not payload.otp:
+        raise HTTPException(400, "pendingId and otp are required")
+    res = await _marg_manager.verify(payload.pendingId, payload.otp)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "OTP verification failed")
+    return res
+
+
+@api_router.delete("/marg/session")
+async def marg_session_clear():
+    await _marg_manager.clear_session()
     return {"ok": True}
 
 
@@ -1215,6 +1289,22 @@ async def on_startup():
                 logger.info(f"Repointed CHETHANA PHARMA to CHETHANA adapter ({fixed.modified_count} row)")
         except Exception as e:
             logger.warning(f"CHETHANA PHARMA migration skipped: {e}")
+        # Ensure MARG (ALL SUPPLIERS) distributor exists (aggregator entry)
+        try:
+            marg_existing = await db.targets.count_documents({"portalType": "MARG"})
+            if marg_existing == 0:
+                d = Distributor(
+                    name="MARG (ALL SUPPLIERS)",
+                    url="https://margcompusoft.com/eRetail/User/Login",
+                    portal="MARG",
+                    portalType="MARG",
+                    selected=True,
+                    hasCredentials=False,
+                )
+                await db.targets.insert_one(d.dict())
+                logger.info("Added MARG (ALL SUPPLIERS) distributor")
+        except Exception as e:
+            logger.warning(f"MARG seed skipped: {e}")
         asyncio.create_task(_cleanup_old_screenshots())
     except Exception as e:
         logger.error(f"Startup error: {e}")
