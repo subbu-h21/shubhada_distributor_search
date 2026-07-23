@@ -211,10 +211,32 @@ def _find_header_row(rows: List[List[str]]) -> int:
     return 0
 
 
+def _dedupe_headers(headers: List[str]) -> List[str]:
+    """Make column names unique by appending _2, _3 etc. to duplicates so
+    `df[col]` always returns a single Series, never a DataFrame slice."""
+    seen: Dict[str, int] = {}
+    out: List[str] = []
+    for h in headers:
+        h = str(h).strip() or "_"
+        if h in seen:
+            seen[h] += 1
+            out.append(f"{h}_{seen[h]}")
+        else:
+            seen[h] = 1
+            out.append(h)
+    return out
+
+
 def _reheader(df: pd.DataFrame) -> pd.DataFrame:
     """If the raw DataFrame has mostly-blank / Unnamed: columns (i.e. the
     real header wasn't on row 1), scan the body for a plausible header row
-    and promote it. Silently returns df unchanged if headers look fine."""
+    and promote it. Also dedupe duplicate column names so `df[col]` always
+    returns a Series (not a DataFrame slice)."""
+    # Always dedupe first — pandas can otherwise return a DataFrame slice
+    # for `df[col]` when a name appears twice, breaking every downstream step.
+    df = df.copy()
+    df.columns = _dedupe_headers(list(df.columns))
+
     good_hdrs = [c for c in df.columns if str(c).strip() and not str(c).lower().startswith("unnamed")]
     if len(good_hdrs) >= 3:
         # Headers look OK — just drop the empty/unnamed columns.
@@ -223,7 +245,8 @@ def _reheader(df: pd.DataFrame) -> pd.DataFrame:
     rows = [df.columns.tolist()] + df.values.tolist()
     rows = [[("" if c is None else str(c)) for c in r] for r in rows]
     hdr_idx = _find_header_row(rows)
-    header = [str(x).strip() or f"col_{i+1}" for i, x in enumerate(rows[hdr_idx])]
+    header_raw = [str(x).strip() or f"col_{i+1}" for i, x in enumerate(rows[hdr_idx])]
+    header = _dedupe_headers(header_raw)
     body = rows[hdr_idx + 1:]
     # Normalise width
     width = len(header)
@@ -303,6 +326,29 @@ def _to_float(v: Any) -> Optional[float]:
     return float(m.group()) if m else None
 
 
+def _cell(row, col: Optional[str]) -> str:
+    """Fetch a cell value from a pandas row, defensively:
+      * missing column → ""
+      * pandas returns a Series (duplicate columns) → first non-empty scalar
+      * NaN / "nan" / "None" strings → ""
+    """
+    if not col: return ""
+    try:
+        v = row[col] if col in row.index else ""
+    except Exception:
+        return ""
+    # If duplicate columns leaked through, we get a Series back
+    if hasattr(v, "iloc"):
+        for x in v.tolist():
+            xs = str(x).strip() if x is not None else ""
+            if xs and xs.lower() not in ("nan", "none", "null"):
+                return xs
+        return ""
+    s = "" if v is None else str(v).strip()
+    if s.lower() in ("nan", "none", "null"): return ""
+    return s
+
+
 def normalise_rows(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> List[Dict[str, Any]]:
     """Apply the mapping to produce clean dicts. Drops rows where the
     product name is empty. Deduplicates by canonical product name — later
@@ -315,18 +361,18 @@ def normalise_rows(df: pd.DataFrame, mapping: Dict[str, Optional[str]]) -> List[
 
     dedup: Dict[str, Dict[str, Any]] = {}
     for _, r in df.iterrows():
-        raw_prod = str(r.get(prod_col, "")).strip()
-        if not raw_prod or raw_prod.lower() in ("nan", "none"): continue
+        raw_prod = _cell(r, prod_col)
+        if not raw_prod: continue
         norm = _canon(raw_prod)
         if not norm: continue
         entry = {
             "product": raw_prod,
             "product_norm": norm,
-            "company": str(r.get(mapping.get("company") or "", "")).strip() if mapping.get("company") else "",
-            "pack":    str(r.get(mapping.get("pack") or "", "")).strip() if mapping.get("pack") else "",
-            "mrp":     _to_float(r.get(mapping.get("mrp"))) if mapping.get("mrp") else None,
-            "ptr":     _to_float(r.get(mapping.get("ptr"))) if mapping.get("ptr") else None,
-            "scheme":  str(r.get(mapping.get("scheme") or "", "")).strip() if mapping.get("scheme") else "",
+            "company": _cell(r, mapping.get("company")),
+            "pack":    _cell(r, mapping.get("pack")),
+            "mrp":     _to_float(_cell(r, mapping.get("mrp"))) if mapping.get("mrp") else None,
+            "ptr":     _to_float(_cell(r, mapping.get("ptr"))) if mapping.get("ptr") else None,
+            "scheme":  _cell(r, mapping.get("scheme")),
         }
         dedup[norm] = entry
     return list(dedup.values())

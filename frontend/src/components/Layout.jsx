@@ -102,7 +102,7 @@ const Layout = ({ children }) => {
 
       {/* Bottom Nav */}
       <nav className="fixed bottom-0 inset-x-0 border-t border-neutral-200 bg-white/95 backdrop-blur z-40">
-        <div className="mx-auto max-w-3xl grid grid-cols-3">
+        <div className="mx-auto max-w-3xl grid grid-cols-4">
           {NAV.map(({ to, label, Icon }) => (
             <NavLink
               key={to}
