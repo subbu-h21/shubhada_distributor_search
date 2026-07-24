@@ -209,7 +209,8 @@ class MargSessionManager:
             # If not obviously authed, try touching an authenticated page
             # to force any lazy-set cookies to appear.
             if not has_auth:
-                for probe in ("https://margcompusoft.com/eRetail/Home",
+                for probe in ("https://margcompusoft.com/eRetail/Dashboard/Dashboard",
+                              "https://margcompusoft.com/eRetail/Home",
                               "https://margcompusoft.com/eRetail/User/Dashboard",
                               "https://margcompusoft.com/eRetail/Retailer/Dashboard"):
                     try:
@@ -218,6 +219,12 @@ class MargSessionManager:
                         cookies = await ctx.cookies()
                         names = {c.get("name", "").lower() for c in cookies}
                         if names & auth_markers:
+                            has_auth = True
+                            break
+                        # Also — if any probe lands on /Dashboard/ without a
+                        # redirect back to /User/Login, treat that as authed.
+                        cur_probe = (page.url or "").lower()
+                        if "/dashboard" in cur_probe and "/user/login" not in cur_probe:
                             has_auth = True
                             break
                     except Exception:
