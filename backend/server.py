@@ -1305,6 +1305,19 @@ async def on_startup():
                 logger.info("Added MARG (ALL SUPPLIERS) distributor")
         except Exception as e:
             logger.warning(f"MARG seed skipped: {e}")
+        # Ensure MARG portal exists in the PORTALS list (idempotent)
+        try:
+            if await db.portals.count_documents({"name": "MARG"}) == 0:
+                p = Portal(
+                    name="MARG",
+                    baseUrl="https://margcompusoft.com/eRetail",
+                    status="ACTIVE",
+                    description="Marg eRetail aggregator — OTP session",
+                )
+                await db.portals.insert_one(p.dict())
+                logger.info("Added MARG portal to PORTALS list")
+        except Exception as e:
+            logger.warning(f"MARG portal seed skipped: {e}")
         asyncio.create_task(_cleanup_old_screenshots())
     except Exception as e:
         logger.error(f"Startup error: {e}")
