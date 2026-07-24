@@ -71,9 +71,9 @@ export const AppProvider = ({ children }) => {
     try { await DistributorsAPI.remove(id); } catch (e) { console.error(e); }
   };
 
-  const runExtraction = async () => {
+  const runExtraction = async ({ onProgress } = {}) => {
     const ids = distributors.filter((t) => t.selected).map((t) => t.id);
-    const entry = await ExtractAPI.run(product, quantity, ids);
+    const entry = await ExtractAPI.run(product, quantity, ids, { onProgress });
     setHistory((prev) => [entry, ...prev]);
     return entry;
   };

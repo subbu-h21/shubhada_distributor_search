@@ -74,8 +74,28 @@ export const ProductsAPI = {
 };
 
 export const ExtractAPI = {
-  run: (product, quantity, targetIds) =>
-    api.post('/extract', { product, quantity: quantity ? Number(quantity) : null, target_ids: targetIds }).then((r) => r.data),
+  // Fire an extraction task and poll until it completes. Returns the final
+  // history-entry object (same shape the old sync endpoint used to return).
+  // This bypasses Cloudflare's ~100s edge timeout by using async task + poll.
+  //   onProgress?: (secondsElapsed) => void   — called every poll tick
+  run: async (product, quantity, targetIds, { onProgress, pollMs = 2500, timeoutMs = 600000 } = {}) => {
+    const start = Date.now();
+    const { task_id: taskId } = await api.post('/extract', {
+      product,
+      quantity: quantity ? Number(quantity) : null,
+      target_ids: targetIds,
+    }).then((r) => r.data);
+    while (true) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const s = await api.get(`/extract/status/${taskId}`).then((r) => r.data);
+      if (onProgress) onProgress(Math.round((Date.now() - start) / 1000));
+      if (s.status === 'done') {
+        if (s.error) throw new Error(s.error);
+        return s.result;
+      }
+      if (Date.now() - start > timeoutMs) throw new Error('Extraction timed out');
+    }
+  },
   manualPick: (historyId, targetId, candidateName) =>
     api.post('/extract/manual-pick', { history_id: historyId, target_id: targetId, candidate_name: candidateName }).then((r) => r.data),
 };

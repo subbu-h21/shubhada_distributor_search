@@ -14,18 +14,19 @@ const ExtractionModal = ({ open, onOpenChange }) => {
   const [phase, setPhase] = useState('idle');
   const [entry, setEntry] = useState(null);
   const [error, setError] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
 
   const active = useMemo(() => distributors.filter((t) => t.selected), [distributors]);
 
   useEffect(() => {
     if (!open) {
-      setPhase('idle'); setEntry(null); setError(null);
+      setPhase('idle'); setEntry(null); setError(null); setElapsed(0);
       return;
     }
-    setPhase('running'); setEntry(null); setError(null);
+    setPhase('running'); setEntry(null); setError(null); setElapsed(0);
     (async () => {
       try {
-        const result = await runExtraction();
+        const result = await runExtraction({ onProgress: setElapsed });
         setEntry(result);
         setPhase('done');
       } catch (e) {

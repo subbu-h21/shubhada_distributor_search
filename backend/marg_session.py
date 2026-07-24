@@ -180,22 +180,59 @@ class MargSessionManager:
                 await page.wait_for_load_state("domcontentloaded", timeout=25000)
             except Exception:
                 pass
-            await page.wait_for_timeout(4500)
+            # Extended wait — MARG sets auth cookies after a couple of
+            # server-side redirects that can take 5–8 s to settle.
+            await page.wait_for_timeout(7500)
 
             cur = (page.url or "").lower()
             body = ""
             try:
-                body = (await page.inner_text("body"))[:500].lower()
+                body = (await page.inner_text("body"))[:600].lower()
             except Exception:
                 pass
-            # Success: no longer on VerifyOTP page
-            success = ("verifyotp" not in cur) and ("user/login" not in cur)
-            if "invalid otp" in body or "otp is incorrect" in body or "expired" in body or "wrong otp" in body:
-                success = False
-            if not success:
+
+            # Explicit failure signals
+            if "invalid otp" in body or "otp is incorrect" in body or "wrong otp" in body or "otp expired" in body:
                 return {"ok": False, "error": "OTP verification failed (invalid or expired)"}
+            if "verifyotp" in cur:
+                return {"ok": False, "error": "OTP verification failed — MARG kept us on the OTP screen"}
+
+            # Explicit success signal: an authenticated cookie must be set.
+            # ASP.NET .NET Framework sites set `.ASPXAUTH`; some MARG builds
+            # use `MargAuth` / `AuthTicket`. Fall back to the presence of
+            # multiple session cookies.
+            cookies = await ctx.cookies()
+            names = {c.get("name", "").lower() for c in cookies}
+            auth_markers = {".aspxauth", "aspxauth", "margauth", "authticket", "authtoken", "userid", "logintoken"}
+            has_auth = bool(names & auth_markers)
+
+            # If not obviously authed, try touching an authenticated page
+            # to force any lazy-set cookies to appear.
+            if not has_auth:
+                for probe in ("https://margcompusoft.com/eRetail/Home",
+                              "https://margcompusoft.com/eRetail/User/Dashboard",
+                              "https://margcompusoft.com/eRetail/Retailer/Dashboard"):
+                    try:
+                        await page.goto(probe, timeout=15000, wait_until="domcontentloaded")
+                        await page.wait_for_timeout(2500)
+                        cookies = await ctx.cookies()
+                        names = {c.get("name", "").lower() for c in cookies}
+                        if names & auth_markers:
+                            has_auth = True
+                            break
+                    except Exception:
+                        continue
+
+            if not has_auth and len(cookies) <= 1:
+                return {
+                    "ok": False,
+                    "error": ("OTP was accepted but MARG did not issue an auth cookie "
+                              "(got only session-id). Please retry with a fresh OTP — "
+                              "possibly the code had already expired or was reused."),
+                }
+
             await self._save_cookies(ctx, entry["mobile"])
-            return {"ok": True, "url": page.url}
+            return {"ok": True, "url": page.url, "cookieCount": len(cookies)}
         except Exception as e:
             return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
         finally:

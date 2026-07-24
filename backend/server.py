@@ -577,99 +577,127 @@ async def _run_one_distributor(browser, doc, product_upper: str, qty: Optional[i
 # ============================================================
 # EXTRACTION (REAL — Playwright + adapters)
 # ============================================================
+# In-memory task store (survives process lifetime). Each task holds:
+#   { status: 'running' | 'done', progress: int, result: entry-dict|None }
+_extract_tasks: dict = {}
+
+
+async def _run_extraction(task_id: str, payload: "ExtractRequest") -> None:
+    """Background worker: runs the Playwright extraction and stores the final
+    history-entry dict under _extract_tasks[task_id]['result']. All errors
+    are trapped so the poll endpoint can always return a clean payload."""
+    try:
+        docs = await db.targets.find({"id": {"$in": payload.target_ids}}).to_list(1000)
+        if not docs:
+            _extract_tasks[task_id] = {"status": "done", "result": None, "error": "No matching distributors"}
+            return
+
+        entry_id = str(uuid.uuid4())
+        product_upper = payload.product.upper().strip()
+        qty = payload.quantity
+        start_ts = datetime.utcnow()
+
+        # Preload session cookies (LIVECONNECT / RETAILIO / MARG)
+        liveconnect_cookies = None
+        if any(d.get("portalType") == "LIVECONNECT" or infer_portal_type(d.get("portal", "")) == "LIVECONNECT" for d in docs):
+            try:
+                lc_doc = await db.liveconnect_session.find_one({"_id": "default"})
+                liveconnect_cookies = (lc_doc or {}).get("cookies")
+            except Exception:
+                liveconnect_cookies = None
+        retailio_cookies = None
+        retailio_local_storage = None
+        if any(d.get("portalType") == "RETAILIO" or infer_portal_type(d.get("portal", "")) == "RETAILIO" for d in docs):
+            try:
+                r_doc = await db.retailio_session.find_one({"_id": "default"})
+                retailio_cookies = (r_doc or {}).get("cookies")
+                retailio_local_storage = (r_doc or {}).get("localStorage")
+            except Exception:
+                retailio_cookies = None
+        marg_cookies = None
+        if any(d.get("portalType") == "MARG" or infer_portal_type(d.get("portal", "")) == "MARG" for d in docs):
+            try:
+                m_doc = await db.marg_session.find_one({"_id": "default"})
+                marg_cookies = (m_doc or {}).get("cookies")
+            except Exception:
+                marg_cookies = None
+
+        browser = None
+        results: List[Dict[str, Any]] = []
+        try:
+            browser = await _get_browser()
+            sem = asyncio.Semaphore(10)
+
+            async def _guarded(d):
+                async with sem:
+                    return await _run_one_distributor(
+                        browser, d, product_upper, qty, entry_id,
+                        liveconnect_cookies=liveconnect_cookies,
+                        retailio_cookies=retailio_cookies,
+                        retailio_local_storage=retailio_local_storage,
+                        marg_cookies=marg_cookies,
+                    )
+
+            results = await asyncio.gather(*[_guarded(d) for d in docs])
+        finally:
+            if browser:
+                try: await browser.close()
+                except Exception: pass
+
+        elapsed = (datetime.utcnow() - start_ts).total_seconds()
+        success = sum(1 for r in results if r["status"] == "SUCCESS")
+        not_found = sum(1 for r in results if r["status"] == "NOT_FOUND")
+        login_failed = sum(1 for r in results if r["status"] == "LOGIN_FAILED")
+        errors = sum(1 for r in results if r["status"] == "ERROR")
+
+        entry = {
+            "id": entry_id,
+            "product": product_upper,
+            "quantity": qty,
+            "timestamp": start_ts,
+            "duration": f"{elapsed:.1f}s",
+            "targetsRun": len(results),
+            "found": success,
+            "notFound": not_found,
+            "loginFailed": login_failed,
+            "errors": errors,
+            "outOfStock": not_found,
+            "status": "COMPLETED" if errors == 0 and login_failed == 0 else "PARTIAL",
+            "results": results,
+        }
+        await db.history.insert_one(entry)
+        entry.pop("_id", None)
+        _extract_tasks[task_id] = {"status": "done", "result": entry}
+    except Exception as e:
+        _extract_tasks[task_id] = {"status": "done", "result": None, "error": f"{e.__class__.__name__}: {e}"}
+
+
 @api_router.post("/extract")
 async def run_extraction(payload: ExtractRequest):
+    """Fire-and-poll extraction. Returns { task_id } immediately; the frontend
+    polls /api/extract/status/{task_id} until status == 'done'. This bypasses
+    Cloudflare's ~100s edge timeout on synchronous requests."""
     if not payload.product.strip():
         raise HTTPException(400, "Product name is required")
     if not payload.target_ids:
         raise HTTPException(400, "At least one distributor is required")
+    task_id = uuid.uuid4().hex
+    _extract_tasks[task_id] = {"status": "running", "result": None}
+    asyncio.create_task(_run_extraction(task_id, payload))
+    return {"task_id": task_id, "status": "running"}
 
-    docs = await db.targets.find({"id": {"$in": payload.target_ids}}).to_list(1000)
-    if not docs:
-        raise HTTPException(404, "No matching distributors")
 
-    entry_id = str(uuid.uuid4())
-    product_upper = payload.product.upper().strip()
-    qty = payload.quantity
-
-    start_ts = datetime.utcnow()
-    results: List[Dict[str, Any]] = []
-
-    browser = None
-    # Preload LIVECONNECT session cookies once (shared across all LIVECONNECT targets)
-    liveconnect_cookies = None
-    if any(d.get("portalType") == "LIVECONNECT" or infer_portal_type(d.get("portal", "")) == "LIVECONNECT" for d in docs):
-        try:
-            lc_doc = await db.liveconnect_session.find_one({"_id": "default"})
-            liveconnect_cookies = (lc_doc or {}).get("cookies")
-        except Exception:
-            liveconnect_cookies = None
-
-    # Preload RETAILIO session (shared across all RETAILIO targets)
-    retailio_cookies = None
-    retailio_local_storage = None
-    if any(d.get("portalType") == "RETAILIO" or infer_portal_type(d.get("portal", "")) == "RETAILIO" for d in docs):
-        try:
-            r_doc = await db.retailio_session.find_one({"_id": "default"})
-            retailio_cookies = (r_doc or {}).get("cookies")
-            retailio_local_storage = (r_doc or {}).get("localStorage")
-        except Exception:
-            retailio_cookies = None
-
-    # Preload MARG session (shared across all MARG targets)
-    marg_cookies = None
-    if any(d.get("portalType") == "MARG" or infer_portal_type(d.get("portal", "")) == "MARG" for d in docs):
-        try:
-            m_doc = await db.marg_session.find_one({"_id": "default"})
-            marg_cookies = (m_doc or {}).get("cookies")
-        except Exception:
-            marg_cookies = None
-
-    try:
-        browser = await _get_browser()
-
-        # Run all distributors in parallel (up to 10 at once)
-        sem = asyncio.Semaphore(10)
-        async def _guarded(d):
-            async with sem:
-                return await _run_one_distributor(
-                    browser, d, product_upper, qty, entry_id,
-                    liveconnect_cookies=liveconnect_cookies,
-                    retailio_cookies=retailio_cookies,
-                    retailio_local_storage=retailio_local_storage,
-                    marg_cookies=marg_cookies,
-                )
-
-        results = await asyncio.gather(*[_guarded(d) for d in docs])
-    finally:
-        if browser:
-            try: await browser.close()
-            except Exception: pass
-
-    elapsed = (datetime.utcnow() - start_ts).total_seconds()
-    success = sum(1 for r in results if r["status"] == "SUCCESS")
-    not_found = sum(1 for r in results if r["status"] == "NOT_FOUND")
-    login_failed = sum(1 for r in results if r["status"] == "LOGIN_FAILED")
-    errors = sum(1 for r in results if r["status"] == "ERROR")
-
-    entry = {
-        "id": entry_id,
-        "product": product_upper,
-        "quantity": qty,
-        "timestamp": start_ts,
-        "duration": f"{elapsed:.1f}s",
-        "targetsRun": len(results),
-        "found": success,
-        "notFound": not_found,
-        "loginFailed": login_failed,
-        "errors": errors,
-        "outOfStock": not_found,  # legacy alias
-        "status": "COMPLETED" if errors == 0 and login_failed == 0 else "PARTIAL",
-        "results": results,
-    }
-    await db.history.insert_one(entry)
-    entry.pop("_id", None)
-    return entry
+@api_router.get("/extract/status/{task_id}")
+async def extract_status(task_id: str):
+    t = _extract_tasks.get(task_id)
+    if not t:
+        raise HTTPException(404, "Unknown task_id (server may have restarted)")
+    if t["status"] == "running":
+        return {"status": "running"}
+    # Done — return the result (either entry-dict or an error string)
+    if t.get("error"):
+        return {"status": "done", "error": t["error"]}
+    return {"status": "done", "result": t.get("result")}
 
 
 # ---------- Manual pick: rerun one distributor with a forced candidate ----------
