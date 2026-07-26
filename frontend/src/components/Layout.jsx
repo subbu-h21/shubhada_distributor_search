@@ -7,16 +7,18 @@ import LiveconnectOtpSheet from './LiveconnectOtpSheet';
 import RetailioOtpSheet from './RetailioOtpSheet';
 import MargOtpSheet from './MargOtpSheet';
 
-const NAV = [
-  { to: '/search', label: 'SEARCH', Icon: Search },
-  { to: '/pricelist', label: 'PRICELISTS', Icon: FileSpreadsheet },
-  { to: '/portals', label: 'PORTALS', Icon: Database },
-  { to: '/history', label: 'HISTORY', Icon: Clock },
+const NAV_ALL = [
+  { to: '/search', label: 'SEARCH', Icon: Search, adminOnly: false },
+  { to: '/pricelist', label: 'PRICELISTS', Icon: FileSpreadsheet, adminOnly: false },
+  { to: '/portals', label: 'PORTALS', Icon: Database, adminOnly: true },
+  { to: '/history', label: 'HISTORY', Icon: Clock, adminOnly: true },
 ];
 
 const Layout = ({ children }) => {
   const location = useLocation();
   const { user, logout } = useAuth();
+  const isAdmin = !!user?.isAdmin;
+  const NAV = NAV_ALL.filter((n) => !n.adminOnly || isAdmin);
   const [menuOpen, setMenuOpen] = useState(false);
   const [cpOpen, setCpOpen] = useState(false);
   const [lcOpen, setLcOpen] = useState(false);
@@ -109,7 +111,7 @@ const Layout = ({ children }) => {
 
       {/* Bottom Nav */}
       <nav className="fixed bottom-0 inset-x-0 border-t border-neutral-200 bg-white/95 backdrop-blur z-40">
-        <div className="mx-auto max-w-3xl grid grid-cols-4">
+        <div className={`mx-auto max-w-3xl grid ${NAV.length === 4 ? 'grid-cols-4' : NAV.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
           {NAV.map(({ to, label, Icon }) => (
             <NavLink
               key={to}

@@ -12,13 +12,27 @@ const SearchPage = () => {
   const [openResult, setOpenResult] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const selectedCount = useMemo(() => distributors.filter((t) => t.selected).length, [distributors]);
+  const [group, setGroup] = useState('LOCAL'); // LOCAL | OUTSIDE
+
+  // A distributor is LOCAL when its portal is SUNSHOP; otherwise OUTSIDE.
+  const isLocal = (t) => (t.portal || '').toUpperCase() === 'SUNSHOP';
+  const visibleDistributors = useMemo(
+    () => distributors.filter((t) => (group === 'LOCAL' ? isLocal(t) : !isLocal(t))),
+    [distributors, group],
+  );
+  const selectedCount = useMemo(
+    () => visibleDistributors.filter((t) => t.selected).length,
+    [visibleDistributors],
+  );
+  const localCount = useMemo(() => distributors.filter(isLocal).length, [distributors]);
+  const outsideCount = useMemo(() => distributors.filter((t) => !isLocal(t)).length, [distributors]);
 
   const handleRun = async () => {
     if (!product.trim()) { toast.error('Enter a product name'); return; }
-    if (selectedCount === 0) { toast.error('Select at least one distributor'); return; }
-    const withoutCreds = distributors.filter((t) => t.selected && !t.hasCredentials);
-    if (withoutCreds.length === distributors.filter((t) => t.selected).length) {
+    if (selectedCount === 0) { toast.error(`Select at least one ${group} distributor`); return; }
+    const selected = visibleDistributors.filter((t) => t.selected);
+    const withoutCreds = selected.filter((t) => !t.hasCredentials);
+    if (withoutCreds.length === selected.length) {
       toast.error('No selected distributor has credentials. Edit one to add username/password.');
       return;
     }
@@ -47,11 +61,27 @@ const SearchPage = () => {
       <section className="mt-8">
         <div className="flex items-baseline justify-between">
           <span className="text-[11px] text-neutral-500 mono-track-wide font-medium">DISTRIBUTORS</span>
-          <span className="text-[11px] text-neutral-500 mono-track-wide font-medium tabular-nums">{selectedCount}/{distributors.length}</span>
+          <span className="text-[11px] text-neutral-500 mono-track-wide font-medium tabular-nums">{selectedCount}/{visibleDistributors.length}</span>
+        </div>
+
+        {/* Group tabs — split load between LOCAL (SUNSHOP) and OUTSIDE (rest) */}
+        <div className="mt-3 grid grid-cols-2 gap-2" role="tablist">
+          <button type="button" role="tab" aria-selected={group === 'LOCAL'}
+            onClick={() => setGroup('LOCAL')}
+            data-testid="group-local-btn"
+            className={`h-11 rounded-sm text-[11px] mono-track-wide font-bold press border ${group === 'LOCAL' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-neutral-950 border-neutral-300 hover:border-emerald-600'}`}>
+            LOCAL · SUNSHOP · {localCount}
+          </button>
+          <button type="button" role="tab" aria-selected={group === 'OUTSIDE'}
+            onClick={() => setGroup('OUTSIDE')}
+            data-testid="group-outside-btn"
+            className={`h-11 rounded-sm text-[11px] mono-track-wide font-bold press border ${group === 'OUTSIDE' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-neutral-950 border-neutral-300 hover:border-emerald-600'}`}>
+            OUTSIDE · {outsideCount}
+          </button>
         </div>
 
         <ul className="mt-3 space-y-2.5">
-          {distributors.map((t) => (
+          {visibleDistributors.map((t) => (
             <li key={t.id} className="group relative border border-neutral-300 rounded-sm px-3 py-3 sm:px-4 sm:py-3.5 flex items-center gap-3 card-hover bg-white">
               <button type="button" onClick={() => toggleDistributor(t.id)} aria-pressed={t.selected}
                 className={`shrink-0 w-6 h-6 rounded-[3px] border border-emerald-600 flex items-center justify-center press ${t.selected ? 'bg-emerald-600 text-white' : 'bg-white text-transparent'}`}>
@@ -103,7 +133,9 @@ const SearchPage = () => {
         </div>
       </div>
 
-      <ExtractionModal open={openResult} onOpenChange={(v) => { setOpenResult(v); if (!v) setRunning(false); }} />
+      <ExtractionModal open={openResult}
+        filterFn={(t) => (group === 'LOCAL' ? isLocal(t) : !isLocal(t))}
+        onOpenChange={(v) => { setOpenResult(v); if (!v) setRunning(false); }} />
       <AddDistributorSheet open={sheetOpen} onOpenChange={setSheetOpen} distributor={editing} />
     </div>
   );

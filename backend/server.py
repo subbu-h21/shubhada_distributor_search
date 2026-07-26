@@ -1346,6 +1346,18 @@ async def on_startup():
                 logger.info("Added MARG portal to PORTALS list")
         except Exception as e:
             logger.warning(f"MARG portal seed skipped: {e}")
+        # Enforce role model: only `shubhada` is admin; other seat users
+        # (manju / abhishek / narendra) are regular members. Idempotent.
+        try:
+            await db.users.update_one({"username": "shubhada"}, {"$set": {"isAdmin": True}})
+            r = await db.users.update_many(
+                {"username": {"$in": ["manju", "abhishek", "narendra"]}, "isAdmin": True},
+                {"$set": {"isAdmin": False}},
+            )
+            if r.modified_count:
+                logger.info(f"Demoted {r.modified_count} seat users to non-admin")
+        except Exception as e:
+            logger.warning(f"Role migration skipped: {e}")
         asyncio.create_task(_cleanup_old_screenshots())
     except Exception as e:
         logger.error(f"Startup error: {e}")

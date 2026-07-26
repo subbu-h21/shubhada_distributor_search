@@ -13,7 +13,7 @@ import { Toaster } from './components/ui/sonner';
 import { Loader2 } from 'lucide-react';
 
 const AppShell = () => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, user } = useAuth();
 
   if (loading) {
     return (
@@ -26,6 +26,8 @@ const AppShell = () => {
 
   if (!isAuthenticated) return <LoginPage />;
 
+  const isAdmin = !!user?.isAdmin;
+
   return (
     <AppProvider>
       <BrowserRouter>
@@ -34,8 +36,8 @@ const AppShell = () => {
             <Route path="/" element={<Navigate to="/search" replace />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/pricelist" element={<PricelistPage />} />
-            <Route path="/portals" element={<PortalsPage />} />
-            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/portals" element={isAdmin ? <PortalsPage /> : <Navigate to="/search" replace />} />
+            <Route path="/history" element={isAdmin ? <HistoryPage /> : <Navigate to="/search" replace />} />
             <Route path="*" element={<Navigate to="/search" replace />} />
           </Routes>
         </Layout>

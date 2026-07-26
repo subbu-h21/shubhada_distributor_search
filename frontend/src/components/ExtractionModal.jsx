@@ -9,14 +9,17 @@ import ExtractionProgress from './ExtractionProgress';
 import ResultFilters from './ResultFilters';
 import { explodeResults } from '../lib/resultUtils';
 
-const ExtractionModal = ({ open, onOpenChange }) => {
+const ExtractionModal = ({ open, onOpenChange, filterFn }) => {
   const { product, quantity, distributors, runExtraction } = useApp();
   const [phase, setPhase] = useState('idle');
   const [entry, setEntry] = useState(null);
   const [error, setError] = useState(null);
   const [elapsed, setElapsed] = useState(0);
 
-  const active = useMemo(() => distributors.filter((t) => t.selected), [distributors]);
+  const active = useMemo(() => {
+    const pool = typeof filterFn === 'function' ? distributors.filter(filterFn) : distributors;
+    return pool.filter((t) => t.selected);
+  }, [distributors, filterFn]);
 
   useEffect(() => {
     if (!open) {
@@ -26,7 +29,7 @@ const ExtractionModal = ({ open, onOpenChange }) => {
     setPhase('running'); setEntry(null); setError(null); setElapsed(0);
     (async () => {
       try {
-        const result = await runExtraction({ onProgress: setElapsed });
+        const result = await runExtraction({ onProgress: setElapsed, filterFn });
         setEntry(result);
         setPhase('done');
       } catch (e) {

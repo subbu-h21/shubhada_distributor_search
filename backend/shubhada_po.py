@@ -31,6 +31,9 @@ from pathlib import Path
 from typing import Optional
 
 SH_URL = "https://shubhadahealth.com:7007"
+# Alternative host — same backend, same user id. Used as a fallback when
+# the :7007 endpoint is unreachable / slow (per user spec, Feb 2026).
+SH_URL_ALT = "https://www.shubhadahealth.com"
 SH_USER = "9448188002"
 SH_PASS = "Q"
 
@@ -241,8 +244,20 @@ async def place_order(
     page = await ctx.new_page()
     try:
         # 1. LOGIN --------------------------------------------------------
-        await page.goto(SH_URL, timeout=45000, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2200)
+        # Try the primary :7007 endpoint first; fall back to www.
+        last_login_err = None
+        for base_url in (SH_URL, SH_URL_ALT):
+            try:
+                await page.goto(base_url, timeout=30000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2500)
+                steps.append(f"open {base_url}")
+                break
+            except Exception as e:
+                last_login_err = e
+                steps.append(f"open-fail {base_url}: {e}")
+                continue
+        else:
+            return {"ok": False, "error": f"Both Shubhada URLs unreachable: {last_login_err}", "screenshots": shots, "steps": steps}
         try:
             await page.fill("input[name='user']", SH_USER)
             await page.fill("input[name='pass']", SH_PASS)

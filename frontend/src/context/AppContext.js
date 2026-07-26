@@ -71,8 +71,11 @@ export const AppProvider = ({ children }) => {
     try { await DistributorsAPI.remove(id); } catch (e) { console.error(e); }
   };
 
-  const runExtraction = async ({ onProgress } = {}) => {
-    const ids = distributors.filter((t) => t.selected).map((t) => t.id);
+  const runExtraction = async ({ onProgress, filterFn } = {}) => {
+    // Optional filterFn lets the caller restrict which distributors are
+    // included (e.g. by LOCAL/OUTSIDE group on the SEARCH page).
+    const pool = typeof filterFn === 'function' ? distributors.filter(filterFn) : distributors;
+    const ids = pool.filter((t) => t.selected).map((t) => t.id);
     const entry = await ExtractAPI.run(product, quantity, ids, { onProgress });
     setHistory((prev) => [entry, ...prev]);
     return entry;
